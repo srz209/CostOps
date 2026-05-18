@@ -1,4 +1,5 @@
 from pathlib import Path
+from html import escape
 import sys
 
 import pandas as pd
@@ -846,6 +847,190 @@ def savings_realization_page():
     )
 
 
+def format_report_table(df, money_cols=None, percent_cols=None, limit=None):
+    money_cols = set(money_cols or [])
+    percent_cols = set(percent_cols or [])
+    display = df.copy()
+    if limit is not None:
+        display = display.head(limit)
+    for column in display.columns:
+        if column in money_cols:
+            display[column] = display[column].fillna(0).map(lambda value: money(float(value)))
+        elif column in percent_cols:
+            display[column] = display[column].fillna(0).map(lambda value: f"{float(value):.0%}")
+        elif pd.api.types.is_datetime64_any_dtype(display[column]):
+            display[column] = display[column].dt.strftime("%Y-%m-%d %H:%M")
+    return display.to_html(index=False, escape=True, classes="report-table")
+
+
+def chart_html(fig):
+    return fig.to_html(full_html=False, include_plotlyjs=False, config={"displayModeBar": False})
+
+
+def build_finance_packet_html(
+    report_type,
+    period,
+    filters,
+    summary_rows,
+    roi_bridge,
+    category_report,
+    team_report,
+    unresolved,
+    owner_report,
+    scan_report,
+    backlog_export,
+    event_view,
+):
+    generated_ts = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %I:%M %p %Z")
+    filter_rows = pd.DataFrame(
+        [
+            ("Report", report_type),
+            ("Time range", period),
+            ("Category", filters["category"]),
+            ("Team", filters["team"]),
+            ("Owner", filters["owner"]),
+            ("Status", filters["status"]),
+            ("Severity", filters["severity"]),
+        ],
+        columns=["Filter", "Value"],
+    )
+
+    roi_fig = px.bar(roi_bridge, x="Measure", y="Amount", text="Amount", labels={"Amount": "USD", "Measure": ""})
+    roi_fig.update_traces(texttemplate="$%{text:,.0f}", marker_color="#1f8a5b")
+    roi_fig.update_layout(height=360, margin=dict(l=20, r=20, t=30, b=80), xaxis_tickangle=-25)
+
+    category_chart = category_report.melt(
+        "category",
+        value_vars=["projected_monthly_savings", "realized_monthly_savings", "missed_savings"],
+        var_name="metric",
+        value_name="amount",
+    )
+    category_fig = px.bar(
+        category_chart,
+        x="amount",
+        y="category",
+        color="metric",
+        orientation="h",
+        barmode="group",
+        labels={"amount": "USD", "category": ""},
+    )
+    category_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+
+    team_fig = px.scatter(
+        team_report,
+        x="projected_monthly_savings",
+        y="missed_savings",
+        size="open_items",
+        color="team",
+        hover_name="team",
+        labels={"projected_monthly_savings": "Projected Monthly Savings", "missed_savings": "Unresolved Missed Savings"},
+    )
+    team_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+
+    unresolved_fig = px.bar(
+        unresolved.head(15).sort_values("missed_savings_to_date"),
+        x="missed_savings_to_date",
+        y="recommendation_id",
+        color="team",
+        orientation="h",
+        hover_data=["title", "owner", "category", "days_lingering"],
+        labels={"missed_savings_to_date": "Missed Savings", "recommendation_id": ""},
+    )
+    unresolved_fig.update_layout(height=430, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+
+    owner_fig = px.bar(
+        owner_report.sort_values("missed_savings", ascending=True),
+        x="missed_savings",
+        y="owner",
+        color="team",
+        orientation="h",
+        hover_data=["open_items", "projected_monthly_savings", "realized_monthly_savings", "avg_days_open"],
+        labels={"missed_savings": "Unresolved Missed Savings", "owner": ""},
+    )
+    owner_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+
+    scan_fig = px.line(
+        scan_report.sort_values("completed_at"),
+        x="completed_at",
+        y="savings_per_scan_dollar",
+        markers=True,
+        labels={"completed_at": "", "savings_per_scan_dollar": "Savings Found per $1 Scan Cost"},
+    )
+    scan_fig.update_traces(line_color="#1f8a5b")
+    scan_fig.update_xaxes(tickformat="%b %d")
+    scan_fig.update_layout(height=330, margin=dict(l=20, r=20, t=30, b=30))
+
+    money_columns = [
+        "projected_monthly_savings",
+        "projected_annual_savings",
+        "realized_monthly_savings",
+        "missed_savings",
+        "projected_daily_savings",
+        "missed_savings_to_date",
+        "scan_cost_usd",
+        "identified_monthly_savings",
+        "savings_per_scan_dollar",
+    ]
+    summary_cards = "".join(
+        f"<div class='metric-card'><span>{escape(str(row.Metric))}</span><strong>{escape(str(row.Value))}</strong></div>"
+        for row in summary_rows.itertuples(index=False)
+        if row.Metric not in {"Time range", "Report type"}
+    )
+
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Cost Savings Finance Packet</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    body {{ font-family: Arial, sans-serif; color: #172033; margin: 28px; }}
+    h1 {{ margin-bottom: 4px; }}
+    h2 {{ border-bottom: 1px solid #d8dee9; padding-bottom: 6px; margin-top: 30px; }}
+    .meta {{ color: #64748b; font-size: 13px; margin-bottom: 18px; }}
+    .metric-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 18px 0; }}
+    .metric-card {{ border: 1px solid #d8dee9; border-left: 5px solid #1f8a5b; border-radius: 8px; padding: 10px 12px; }}
+    .metric-card span {{ display: block; color: #64748b; font-size: 12px; }}
+    .metric-card strong {{ display: block; font-size: 21px; margin-top: 3px; }}
+    .report-table {{ border-collapse: collapse; width: 100%; font-size: 12px; margin: 10px 0 18px; }}
+    .report-table th {{ text-align: left; background: #f1f5f9; border: 1px solid #d8dee9; padding: 7px; }}
+    .report-table td {{ border: 1px solid #e5e7eb; padding: 7px; vertical-align: top; }}
+    .footer {{ margin-top: 34px; color: #64748b; font-size: 12px; }}
+  </style>
+</head>
+<body>
+  <h1>Cost Savings Finance Packet</h1>
+  <div class="meta">Generated {escape(generated_ts)} from the current filtered report view.</div>
+  <h2>Report Context</h2>
+  {format_report_table(filter_rows)}
+  <h2>Executive ROI Summary</h2>
+  <div class="metric-grid">{summary_cards}</div>
+  {chart_html(roi_fig)}
+  {format_report_table(summary_rows)}
+  <h2>Savings by Category</h2>
+  {chart_html(category_fig)}
+  {format_report_table(category_report.sort_values("projected_monthly_savings", ascending=False), money_columns, ["realization_rate"])}
+  <h2>Savings by Team</h2>
+  {chart_html(team_fig)}
+  {format_report_table(team_report.sort_values("missed_savings", ascending=False), money_columns, ["realization_rate"])}
+  <h2>Unresolved Opportunity</h2>
+  {chart_html(unresolved_fig)}
+  {format_report_table(unresolved[["recommendation_id", "title", "category", "team", "owner", "status", "projected_daily_savings", "missed_savings_to_date", "days_lingering"]], money_columns, limit=50)}
+  <h2>Owner Accountability</h2>
+  {chart_html(owner_fig)}
+  {format_report_table(owner_report.sort_values("missed_savings", ascending=False), money_columns)}
+  <h2>Scan ROI History</h2>
+  {chart_html(scan_fig)}
+  {format_report_table(scan_report.sort_values("started_at", ascending=False), money_columns)}
+  <h2>Recommendation Backlog Detail</h2>
+  {format_report_table(backlog_export, money_columns, limit=200)}
+  <h2>Audit Log Evidence</h2>
+  {format_report_table(event_view.sort_values("event_ts", ascending=False), limit=200)}
+  <div class="footer">Downloaded/generated timestamp: {escape(generated_ts)}</div>
+</body>
+</html>"""
+
+
 def reports_page():
     st.title("Reports")
     top_cols = st.columns([1.35, 0.95, 1, 1, 1, 1])
@@ -930,25 +1115,16 @@ def reports_page():
         ],
         columns=["Metric", "Value"],
     )
-    summary_text = "\n".join(f"- {row.Metric}: {row.Value}" for row in summary_rows.itertuples(index=False))
-    report_markdown = f"""# Cost Savings Report
-
-Generated from the current filtered view.
-
-{summary_text}
-"""
-    download_cols = st.columns([1, 1, 1, 3])
-    download_cols[0].download_button(
-        "Download summary",
-        summary_rows.to_csv(index=False),
-        file_name="cost_savings_summary.csv",
-        mime="text/csv",
-    )
-    download_cols[1].download_button(
-        "Download report narrative",
-        report_markdown,
-        file_name="cost_savings_report.md",
-        mime="text/markdown",
+    roi_bridge = pd.DataFrame(
+        [
+            ("Current monthly spend", total_spend),
+            ("Monthly opportunity found", monthly_opportunity),
+            ("Realized monthly savings", realized_monthly),
+            ("Unresolved missed savings", open_missed),
+            ("Latest scan cost", scan_cost),
+            ("Net monthly benefit found", net_monthly_benefit),
+        ],
+        columns=["Measure", "Amount"],
     )
 
     if report_type in {"Comprehensive finance packet", "Executive ROI summary"}:
@@ -967,17 +1143,6 @@ Generated from the current filtered view.
         )
         roi_cols = st.columns([1, 1])
         with roi_cols[0]:
-            roi_bridge = pd.DataFrame(
-                [
-                    ("Current monthly spend", total_spend),
-                    ("Monthly opportunity found", monthly_opportunity),
-                    ("Realized monthly savings", realized_monthly),
-                    ("Unresolved missed savings", open_missed),
-                    ("Latest scan cost", scan_cost),
-                    ("Net monthly benefit found", net_monthly_benefit),
-                ],
-                columns=["Measure", "Amount"],
-            )
             fig = px.bar(
                 roi_bridge,
                 x="Measure",
@@ -1269,26 +1434,53 @@ Generated from the current filtered view.
     if team != "All":
         event_view = event_view[event_view["team"] == team]
 
-    export_cols = st.columns([1, 1, 1, 1])
+    finance_packet_html = build_finance_packet_html(
+        report_type,
+        period,
+        {
+            "category": category,
+            "team": team,
+            "owner": owner,
+            "status": status,
+            "severity": severity,
+        },
+        summary_rows,
+        roi_bridge,
+        category_report,
+        team_report,
+        unresolved,
+        owner_report,
+        scan_report,
+        backlog_export,
+        event_view,
+    )
+
+    export_cols = st.columns([1.45, 1, 1, 1, 1])
     export_cols[0].download_button(
+        "Download finance packet",
+        finance_packet_html,
+        file_name="cost_savings_finance_packet.html",
+        mime="text/html",
+    )
+    export_cols[1].download_button(
         "Download backlog",
         backlog_export.to_csv(index=False),
         file_name="recommendation_backlog_report.csv",
         mime="text/csv",
     )
-    export_cols[1].download_button(
+    export_cols[2].download_button(
         "Download audit log",
         event_view.sort_values("event_ts", ascending=False).to_csv(index=False),
         file_name="recommendation_audit_log.csv",
         mime="text/csv",
     )
-    export_cols[2].download_button(
+    export_cols[3].download_button(
         "Download team report",
         team_report.to_csv(index=False),
         file_name="team_savings_report.csv",
         mime="text/csv",
     )
-    export_cols[3].download_button(
+    export_cols[4].download_button(
         "Download category report",
         category_report.to_csv(index=False),
         file_name="category_savings_report.csv",
