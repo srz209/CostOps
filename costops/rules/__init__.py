@@ -1,0 +1,2 @@
+"""Recommendation rule catalog."""
+
