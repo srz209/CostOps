@@ -249,41 +249,10 @@ category_options = ["All"] + sorted(recommendations["category"].unique().tolist(
 owner_options = ["All"] + sorted(recommendations["owner"].unique().tolist())
 team_options = ["All"] + sorted(recommendations["team"].unique().tolist())
 
-with st.sidebar:
-    st.title("Cost Optimization")
-    data_source_mode = st.selectbox("Data source", ["Sample data", "Snowflake"], index=0)
-    if data_source_mode == "Snowflake":
-        if snowflake_config:
-            try:
-                warehouses = load_live_warehouse_metering(snowflake_config, lookback_days=30, credit_price=DEFAULT_CREDIT_PRICE)
-                data_source_status = "Snowflake warehouse metering loaded"
-            except Exception as exc:
-                data_source_status = f"Snowflake load failed; using sample data. {exc}"
-                warehouses = data["warehouses"]
-        else:
-            data_source_status = "Snowflake secrets missing; using sample data"
-            warehouses = data["warehouses"]
-
-    page = st.radio(
-        "Navigation",
-        [
-            "Overview",
-            "Recommendations",
-            "Warehouses",
-            "Workloads",
-            "Storage",
-            "Tasks",
-            "Scan & Schedule",
-            "Savings Realization",
-            "Reports",
-            "Settings",
-        ],
-        label_visibility="collapsed",
-    )
-    st.divider()
-    st.caption("Data source status")
-    state = "complete" if data_source_status in {"Sample data loaded", "Snowflake warehouse metering loaded"} else "error"
-    st.status(data_source_status, state=state, expanded=False)
+def scan_schedule_page():
+    st.title("Scan & Schedule")
+    st.caption("Schedule, run, and review Snowflake environment analysis runs. POC mode uses demo history.")
+    scan_control_page_section(DEFAULT_CREDIT_PRICE)
 
 
 def apply_recommendation_filters(df, status="All", category="All", owner="All", team="All", min_confidence=0.65):
@@ -2218,25 +2187,47 @@ def settings_page():
     st.json(assumptions)
 
 
-if page == "Overview":
-    overview()
-elif page == "Recommendations":
-    recommendations_page()
-elif page == "Warehouses":
-    warehouses_page()
-elif page == "Workloads":
-    workloads_page()
-elif page == "Storage":
-    storage_page()
-elif page == "Tasks":
-    tasks_page()
-elif page == "Scan & Schedule":
-    st.title("Scan & Schedule")
-    st.caption("Schedule, run, and review Snowflake environment analysis runs. POC mode uses demo history.")
-    scan_control_page_section(DEFAULT_CREDIT_PRICE)
-elif page == "Savings Realization":
-    savings_realization_page()
-elif page == "Reports":
-    reports_page()
-else:
-    settings_page()
+navigation_pages = {
+    "Command Center": [
+        st.Page(overview, title="Overview", icon=":material/space_dashboard:", default=True),
+        st.Page(recommendations_page, title="Recommendations", icon=":material/rule_folder:"),
+        st.Page(scan_schedule_page, title="Scan & Schedule", icon=":material/schedule_send:"),
+    ],
+    "Analysis": [
+        st.Page(warehouses_page, title="Warehouses", icon=":material/database:"),
+        st.Page(workloads_page, title="Workloads", icon=":material/monitoring:"),
+        st.Page(storage_page, title="Storage", icon=":material/storage:"),
+        st.Page(tasks_page, title="Tasks", icon=":material/task_alt:"),
+    ],
+    "Value": [
+        st.Page(savings_realization_page, title="Savings Realization", icon=":material/trending_up:"),
+        st.Page(reports_page, title="Reports", icon=":material/assessment:"),
+    ],
+    "Admin": [
+        st.Page(settings_page, title="Settings", icon=":material/settings:"),
+    ],
+}
+
+current_page = st.navigation(navigation_pages, position="sidebar", expanded=True)
+
+with st.sidebar:
+    st.title("Cost Optimization")
+    data_source_mode = st.selectbox("Data source", ["Sample data", "Snowflake"], index=0)
+    if data_source_mode == "Snowflake":
+        if snowflake_config:
+            try:
+                warehouses = load_live_warehouse_metering(snowflake_config, lookback_days=30, credit_price=DEFAULT_CREDIT_PRICE)
+                data_source_status = "Snowflake warehouse metering loaded"
+            except Exception as exc:
+                data_source_status = f"Snowflake load failed; using sample data. {exc}"
+                warehouses = data["warehouses"]
+        else:
+            data_source_status = "Snowflake secrets missing; using sample data"
+            warehouses = data["warehouses"]
+
+    st.divider()
+    st.caption("Data source status")
+    state = "complete" if data_source_status in {"Sample data loaded", "Snowflake warehouse metering loaded"} else "error"
+    st.status(data_source_status, state=state, expanded=False)
+
+current_page.run()
