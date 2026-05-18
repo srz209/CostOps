@@ -164,6 +164,28 @@ REPORT_METRIC_COLORS = {
     "realized_monthly_savings": "#1f8a5b",
     "missed_savings": "#c2410c",
 }
+REPORT_SECTION_OPTIONS = [
+    "Savings by category",
+    "Savings by team",
+    "Unresolved opportunity",
+    "Owner accountability",
+    "Scan ROI history",
+]
+REPORT_PRESETS = {
+    "Comprehensive finance packet": REPORT_SECTION_OPTIONS,
+    "Executive ROI summary": [],
+    "Savings by team": ["Savings by team", "Unresolved opportunity"],
+    "Savings by category": ["Savings by category", "Unresolved opportunity"],
+    "Unresolved opportunity": ["Unresolved opportunity", "Owner accountability"],
+    "Owner accountability": ["Owner accountability", "Unresolved opportunity"],
+    "Scan ROI history": ["Scan ROI history"],
+    "Custom report": ["Savings by category", "Savings by team"],
+}
+EVIDENCE_LIMITS = {
+    "Summary": {"backlog": 10, "audit": 10, "section": 10},
+    "Standard": {"backlog": 40, "audit": 40, "section": 25},
+    "Full evidence": {"backlog": 200, "audit": 200, "section": 100},
+}
 
 
 @st.cache_data
@@ -1067,8 +1089,11 @@ def build_excel_report(
     scan_report,
     backlog_export,
     event_view,
+    selected_sections,
+    evidence_level,
 ):
     money_columns = report_money_columns()
+    limits = EVIDENCE_LIMITS[evidence_level]
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         workbook = writer.book
@@ -1079,13 +1104,20 @@ def build_excel_report(
             writer, sheet_name="Executive Summary", index=False, startrow=0
         )
         summary_rows.to_excel(writer, sheet_name="Executive Summary", index=False, startrow=3)
-        category_report.to_excel(writer, sheet_name="Category Savings", index=False)
-        team_report.to_excel(writer, sheet_name="Team Savings", index=False)
-        unresolved.to_excel(writer, sheet_name="Unresolved", index=False)
-        owner_report.to_excel(writer, sheet_name="Owner Accountability", index=False)
-        scan_report.to_excel(writer, sheet_name="Scan ROI", index=False)
-        backlog_export.to_excel(writer, sheet_name="Backlog", index=False)
-        event_view.sort_values("event_ts", ascending=False).to_excel(writer, sheet_name="Audit Log", index=False)
+        if "Savings by category" in selected_sections:
+            category_report.to_excel(writer, sheet_name="Category Savings", index=False)
+        if "Savings by team" in selected_sections:
+            team_report.to_excel(writer, sheet_name="Team Savings", index=False)
+        if "Unresolved opportunity" in selected_sections:
+            unresolved.head(limits["section"]).to_excel(writer, sheet_name="Unresolved", index=False)
+        if "Owner accountability" in selected_sections:
+            owner_report.to_excel(writer, sheet_name="Owner Accountability", index=False)
+        if "Scan ROI history" in selected_sections:
+            scan_report.to_excel(writer, sheet_name="Scan ROI", index=False)
+        backlog_export.head(limits["backlog"]).to_excel(writer, sheet_name="Backlog", index=False)
+        event_view.sort_values("event_ts", ascending=False).head(limits["audit"]).to_excel(
+            writer, sheet_name="Audit Log", index=False
+        )
 
         for sheet_name, worksheet in writer.sheets.items():
             worksheet.freeze_panes(1, 0)
@@ -1149,8 +1181,11 @@ def build_pdf_report(
     scan_report,
     backlog_export,
     event_view,
+    selected_sections,
+    evidence_level,
 ):
     money_columns = report_money_columns()
+    limits = EVIDENCE_LIMITS[evidence_level]
     output = BytesIO()
     doc = SimpleDocTemplate(
         output,
@@ -1173,30 +1208,35 @@ def build_pdf_report(
         PageBreak(),
     ]
 
-    include_all = report_type == "Comprehensive finance packet"
     sections = []
-    if include_all or report_type == "Savings by category":
+    if "Savings by category" in selected_sections:
         sections.append(("Savings by Category", category_report.sort_values("projected_monthly_savings", ascending=False)))
-    if include_all or report_type == "Savings by team":
+    if "Savings by team" in selected_sections:
         sections.append(("Savings by Team", team_report.sort_values("missed_savings", ascending=False)))
-    if include_all or report_type == "Unresolved opportunity":
+    if "Unresolved opportunity" in selected_sections:
         sections.append(("Unresolved Opportunity", unresolved))
-    if include_all or report_type == "Owner accountability":
+    if "Owner accountability" in selected_sections:
         sections.append(("Owner Accountability", owner_report.sort_values("missed_savings", ascending=False)))
-    if include_all or report_type == "Scan ROI history":
+    if "Scan ROI history" in selected_sections:
         sections.append(("Scan ROI History", scan_report.sort_values("started_at", ascending=False)))
 
     for title, frame in sections:
-        story.extend([Paragraph(title, styles["Heading2"]), pdf_table(frame, money_columns, ["realization_rate"], limit=25), Spacer(1, 10)])
+        story.extend(
+            [
+                Paragraph(title, styles["Heading2"]),
+                pdf_table(frame, money_columns, ["realization_rate"], limit=limits["section"]),
+                Spacer(1, 10),
+            ]
+        )
 
     story.extend(
         [
             PageBreak(),
             Paragraph("Recommendation Backlog Detail", styles["Heading2"]),
-            pdf_table(backlog_export, money_columns, limit=40),
+            pdf_table(backlog_export, money_columns, limit=limits["backlog"]),
             Spacer(1, 10),
             Paragraph("Audit Log Evidence", styles["Heading2"]),
-            pdf_table(event_view.sort_values("event_ts", ascending=False), limit=40),
+            pdf_table(event_view.sort_values("event_ts", ascending=False), limit=limits["audit"]),
             Spacer(1, 12),
             Paragraph(f"Downloaded/generated timestamp: {generated_at.strftime('%Y-%m-%d %I:%M %p %Z')}", styles["Normal"]),
         ]
@@ -1221,6 +1261,8 @@ def build_finance_packet_html(
     scan_report,
     backlog_export,
     event_view,
+    selected_sections,
+    evidence_level,
 ):
     generated_ts = generated_at.strftime("%Y-%m-%d %I:%M %p %Z")
     filter_rows = pd.DataFrame(
@@ -1326,7 +1368,7 @@ def build_finance_packet_html(
         for row in summary_rows.itertuples(index=False)
         if row.Metric not in {"Time range", "Report type"}
     )
-    include_all = report_type == "Comprehensive finance packet"
+    limits = EVIDENCE_LIMITS[evidence_level]
     category_section = ""
     team_section = ""
     unresolved_section = ""
@@ -1344,35 +1386,35 @@ def build_finance_packet_html(
   {format_report_table(summary_rows)}
 """
 
-    if include_all or report_type == "Savings by category":
+    if "Savings by category" in selected_sections:
         category_section = f"""
   <h2>Savings by Category</h2>
   {chart_html(category_fig)}
   {format_report_table(category_report.sort_values("projected_monthly_savings", ascending=False), money_columns, ["realization_rate"])}
 """
 
-    if include_all or report_type == "Savings by team":
+    if "Savings by team" in selected_sections:
         team_section = f"""
   <h2>Savings by Team</h2>
   {chart_html(team_fig)}
   {format_report_table(team_report.sort_values("missed_savings", ascending=False), money_columns, ["realization_rate"])}
 """
 
-    if include_all or report_type == "Unresolved opportunity":
+    if "Unresolved opportunity" in selected_sections:
         unresolved_section = f"""
   <h2>Unresolved Opportunity</h2>
   {chart_html(unresolved_fig)}
-  {format_report_table(unresolved[["recommendation_id", "title", "category", "team", "owner", "status", "projected_daily_savings", "missed_savings_to_date", "days_lingering"]], money_columns, limit=50)}
+  {format_report_table(unresolved[["recommendation_id", "title", "category", "team", "owner", "status", "projected_daily_savings", "missed_savings_to_date", "days_lingering"]], money_columns, limit=limits["section"])}
 """
 
-    if include_all or report_type == "Owner accountability":
+    if "Owner accountability" in selected_sections:
         owner_section = f"""
   <h2>Owner Accountability</h2>
   {chart_html(owner_fig)}
   {format_report_table(owner_report.sort_values("missed_savings", ascending=False), money_columns)}
 """
 
-    if include_all or report_type == "Scan ROI history":
+    if "Scan ROI history" in selected_sections:
         scan_section = f"""
   <h2>Scan ROI History</h2>
   {chart_html(scan_fig)}
@@ -1412,9 +1454,9 @@ def build_finance_packet_html(
   {owner_section}
   {scan_section}
   <h2>Recommendation Backlog Detail</h2>
-  {format_report_table(backlog_export, money_columns, limit=200)}
+  {format_report_table(backlog_export, money_columns, limit=limits["backlog"])}
   <h2>Audit Log Evidence</h2>
-  {format_report_table(event_view.sort_values("event_ts", ascending=False), limit=200)}
+  {format_report_table(event_view.sort_values("event_ts", ascending=False), limit=limits["audit"])}
   <div class="footer">Downloaded/generated timestamp: {escape(generated_ts)}</div>
 </body>
 </html>"""
@@ -1434,6 +1476,7 @@ def reports_page():
                 "Unresolved opportunity",
                 "Owner accountability",
                 "Scan ROI history",
+                "Custom report",
             ],
         )
     with top_cols[1]:
@@ -1448,7 +1491,18 @@ def reports_page():
         status = st.selectbox("Status", status_options, key="reports_status")
 
     severity = st.segmented_control("Severity", ["All"] + severity_order, default="All")
-    download_format = st.segmented_control("Download format", ["PDF", "Excel", "HTML"], default="PDF")
+    config_cols = st.columns([2.4, 1.1, 1.1])
+    with config_cols[0]:
+        selected_sections = st.multiselect(
+            "Report sections",
+            REPORT_SECTION_OPTIONS,
+            default=REPORT_PRESETS[report_type],
+            key=f"report_sections_{report_type}",
+        )
+    with config_cols[1]:
+        evidence_level = st.selectbox("Evidence", ["Summary", "Standard", "Full evidence"], index=1)
+    with config_cols[2]:
+        download_format = st.segmented_control("Download format", ["PDF", "Excel", "HTML"], default="PDF")
     page_recs = apply_recommendation_filters(
         recommendations,
         status=status,
@@ -1591,6 +1645,8 @@ def reports_page():
             scan_report,
             backlog_export,
             event_view,
+            selected_sections,
+            evidence_level,
         )
         download_extension = "pdf"
         download_mime = "application/pdf"
@@ -1605,6 +1661,8 @@ def reports_page():
             scan_report,
             backlog_export,
             event_view,
+            selected_sections,
+            evidence_level,
         )
         download_extension = "xlsx"
         download_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1630,6 +1688,8 @@ def reports_page():
             scan_report,
             backlog_export,
             event_view,
+            selected_sections,
+            evidence_level,
         )
         download_extension = "html"
         download_mime = "text/html"
@@ -1640,6 +1700,10 @@ def reports_page():
         download_data,
         file_name=report_filename(report_type, generated_at, download_extension),
         mime=download_mime,
+    )
+    st.caption(
+        f"Included sections: {', '.join(selected_sections) if selected_sections else 'Executive summary only'} | "
+        f"Evidence: {evidence_level}"
     )
 
     st.markdown(
@@ -1678,7 +1742,7 @@ def reports_page():
             hide_index=True,
         )
 
-    if report_type in {"Comprehensive finance packet", "Savings by category"}:
+    if "Savings by category" in selected_sections:
         st.subheader("Savings by Category")
         left, right = st.columns([1.1, 1])
         with left:
@@ -1714,7 +1778,7 @@ def reports_page():
                 },
             )
 
-    if report_type in {"Comprehensive finance packet", "Savings by team"}:
+    if "Savings by team" in selected_sections:
         st.subheader("Savings by Team")
         left, right = st.columns([1.05, 1])
         with left:
@@ -1744,7 +1808,7 @@ def reports_page():
                 },
             )
 
-    if report_type in {"Comprehensive finance packet", "Unresolved opportunity"}:
+    if "Unresolved opportunity" in selected_sections:
         st.subheader("Unresolved Opportunity")
         st.markdown(
             f"""
@@ -1791,7 +1855,7 @@ def reports_page():
                 },
             )
 
-    if report_type in {"Comprehensive finance packet", "Owner accountability"}:
+    if "Owner accountability" in selected_sections:
         st.subheader("Owner Accountability")
         fig = px.bar(
             owner_report.sort_values("missed_savings", ascending=True),
@@ -1816,7 +1880,7 @@ def reports_page():
             },
         )
 
-    if report_type in {"Comprehensive finance packet", "Scan ROI history"}:
+    if "Scan ROI history" in selected_sections:
         st.subheader("Scan ROI History")
         left, right = st.columns([1, 1])
         with left:
