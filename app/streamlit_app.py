@@ -181,10 +181,10 @@ REPORT_PRESETS = {
     "Scan ROI history": ["Scan ROI history"],
     "Custom report": ["Savings by category", "Savings by team"],
 }
-EVIDENCE_LIMITS = {
-    "Summary": {"backlog": 10, "audit": 10, "section": 10},
-    "Standard": {"backlog": 40, "audit": 40, "section": 25},
-    "Full evidence": {"backlog": 200, "audit": 200, "section": 100},
+REPORT_DETAIL_LIMITS = {
+    "Summary only": {"backlog": 10, "audit": 10, "section": 10},
+    "Standard detail": {"backlog": 40, "audit": 40, "section": 25},
+    "Full detail": {"backlog": 200, "audit": 200, "section": 100},
 }
 
 
@@ -1080,6 +1080,7 @@ def report_money_columns():
 
 
 def build_excel_report(
+    report_type,
     executive_narrative,
     summary_rows,
     category_report,
@@ -1090,10 +1091,10 @@ def build_excel_report(
     backlog_export,
     event_view,
     selected_sections,
-    evidence_level,
+    report_detail,
 ):
     money_columns = report_money_columns()
-    limits = EVIDENCE_LIMITS[evidence_level]
+    limits = REPORT_DETAIL_LIMITS[report_detail]
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         workbook = writer.book
@@ -1104,6 +1105,14 @@ def build_excel_report(
             writer, sheet_name="Executive Summary", index=False, startrow=0
         )
         summary_rows.to_excel(writer, sheet_name="Executive Summary", index=False, startrow=3)
+        if report_type == "Executive ROI summary":
+            roi_lines = pd.DataFrame(
+                [
+                    {"Included Report": "Executive ROI summary only"},
+                    {"Included Report": "Use a savings/team/category report preset for operational breakdown tabs."},
+                ]
+            )
+            roi_lines.to_excel(writer, sheet_name="Executive ROI", index=False)
         if "Savings by category" in selected_sections:
             category_report.to_excel(writer, sheet_name="Category Savings", index=False)
         if "Savings by team" in selected_sections:
@@ -1139,6 +1148,8 @@ def build_excel_report(
             "Scan ROI": scan_report,
             "Backlog": backlog_export,
         }.items():
+            if sheet_name not in writer.sheets:
+                continue
             worksheet = writer.sheets[sheet_name]
             for idx, column in enumerate(df.columns):
                 if column in money_columns:
@@ -1182,10 +1193,10 @@ def build_pdf_report(
     backlog_export,
     event_view,
     selected_sections,
-    evidence_level,
+    report_detail,
 ):
     money_columns = report_money_columns()
-    limits = EVIDENCE_LIMITS[evidence_level]
+    limits = REPORT_DETAIL_LIMITS[report_detail]
     output = BytesIO()
     doc = SimpleDocTemplate(
         output,
@@ -1262,7 +1273,7 @@ def build_finance_packet_html(
     backlog_export,
     event_view,
     selected_sections,
-    evidence_level,
+    report_detail,
 ):
     generated_ts = generated_at.strftime("%Y-%m-%d %I:%M %p %Z")
     filter_rows = pd.DataFrame(
@@ -1368,7 +1379,7 @@ def build_finance_packet_html(
         for row in summary_rows.itertuples(index=False)
         if row.Metric not in {"Time range", "Report type"}
     )
-    limits = EVIDENCE_LIMITS[evidence_level]
+    limits = REPORT_DETAIL_LIMITS[report_detail]
     category_section = ""
     team_section = ""
     unresolved_section = ""
@@ -1491,17 +1502,16 @@ def reports_page():
         status = st.selectbox("Status", status_options, key="reports_status")
 
     severity = st.segmented_control("Severity", ["All"] + severity_order, default="All")
-    config_cols = st.columns([2.4, 1.1, 1.1])
+    selected_sections = REPORT_PRESETS[report_type]
+    config_cols = st.columns([1.1, 1.1, 3.8])
     with config_cols[0]:
-        selected_sections = st.multiselect(
-            "Report sections",
-            REPORT_SECTION_OPTIONS,
-            default=REPORT_PRESETS[report_type],
-            key=f"report_sections_{report_type}",
+        report_detail = st.selectbox(
+            "Report detail",
+            ["Summary only", "Standard detail", "Full detail"],
+            index=1,
+            help="Controls how many recommendation and audit rows are included in the downloaded report.",
         )
     with config_cols[1]:
-        evidence_level = st.selectbox("Evidence", ["Summary", "Standard", "Full evidence"], index=1)
-    with config_cols[2]:
         download_format = st.segmented_control("Download format", ["PDF", "Excel", "HTML"], default="PDF")
     page_recs = apply_recommendation_filters(
         recommendations,
@@ -1646,12 +1656,13 @@ def reports_page():
             backlog_export,
             event_view,
             selected_sections,
-            evidence_level,
+            report_detail,
         )
         download_extension = "pdf"
         download_mime = "application/pdf"
     elif download_format == "Excel":
         download_data = build_excel_report(
+            report_type,
             executive_narrative,
             summary_rows,
             category_report,
@@ -1662,7 +1673,7 @@ def reports_page():
             backlog_export,
             event_view,
             selected_sections,
-            evidence_level,
+            report_detail,
         )
         download_extension = "xlsx"
         download_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1689,7 +1700,7 @@ def reports_page():
             backlog_export,
             event_view,
             selected_sections,
-            evidence_level,
+            report_detail,
         )
         download_extension = "html"
         download_mime = "text/html"
@@ -1703,7 +1714,7 @@ def reports_page():
     )
     st.caption(
         f"Included sections: {', '.join(selected_sections) if selected_sections else 'Executive summary only'} | "
-        f"Evidence: {evidence_level}"
+        f"Report detail: {report_detail}"
     )
 
     st.markdown(
