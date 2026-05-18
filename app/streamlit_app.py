@@ -851,6 +851,7 @@ def savings_realization_page():
         use_container_width=True,
         hide_index=True,
     )
+    st.caption(f"Report generated at {pd.Timestamp.now(tz='America/New_York').strftime('%Y-%m-%d %I:%M %p %Z')}.")
 
 
 def format_report_table(df, money_cols=None, percent_cols=None, limit=None):
@@ -992,15 +993,19 @@ def build_finance_packet_html(
         if row.Metric not in {"Time range", "Report type"}
     )
     include_all = report_type == "Comprehensive finance packet"
-    executive_section = ""
     category_section = ""
     team_section = ""
     unresolved_section = ""
     owner_section = ""
     scan_section = ""
 
-    if include_all or report_type == "Executive ROI summary":
-        executive_section = f"""
+    executive_section = f"""
+  <h2>Executive Summary</h2>
+  <p>
+    This report reflects the current filtered view and shows the savings impact, remaining opportunity,
+    and supporting audit evidence needed to validate ROI. The figures update based on the selected time
+    range, category, team, owner, status, and severity filters.
+  </p>
   <h2>Executive ROI Summary</h2>
   <div class="metric-grid">{summary_cards}</div>
   {chart_html(roi_fig)}
@@ -1277,38 +1282,38 @@ def reports_page():
         unsafe_allow_html=True,
     )
 
-    if report_type in {"Comprehensive finance packet", "Executive ROI summary"}:
-        st.subheader("Executive ROI Summary")
-        realized_label = money(realized).replace("$", "\\$")
-        projected_label = money(projected).replace("$", "\\$")
-        open_missed_label = money(open_missed).replace("$", "\\$")
-        scan_roi_label = money(scan_roi).replace("$", "\\$")
-        st.markdown(
-            f"""
-            This report shows **{realized_label}** in {period} realized savings and **{projected_label}** in
-            projected savings from the filtered recommendation set. Current unresolved items represent
-            **{open_missed_label}** in missed savings to date, while the latest scan found **{scan_roi_label}**
-            in monthly savings opportunity for every estimated dollar of scan cost.
-            """
+    st.subheader("Executive Summary")
+    realized_label = money(realized).replace("$", "\\$")
+    projected_label = money(projected).replace("$", "\\$")
+    open_missed_label = money(open_missed).replace("$", "\\$")
+    scan_roi_label = money(scan_roi).replace("$", "\\$")
+    st.markdown(
+        f"""
+        This report shows **{realized_label}** in {period} realized savings and **{projected_label}** in
+        projected savings from the filtered recommendation set. Current unresolved items represent
+        **{open_missed_label}** in missed savings to date, while the latest scan found **{scan_roi_label}**
+        in monthly savings opportunity for every estimated dollar of scan cost.
+        """
+    )
+    st.subheader("Executive ROI Summary")
+    roi_cols = st.columns([1, 1])
+    with roi_cols[0]:
+        fig = px.bar(
+            roi_bridge,
+            x="Measure",
+            y="Amount",
+            text="Amount",
+            labels={"Amount": "USD", "Measure": ""},
         )
-        roi_cols = st.columns([1, 1])
-        with roi_cols[0]:
-            fig = px.bar(
-                roi_bridge,
-                x="Measure",
-                y="Amount",
-                text="Amount",
-                labels={"Amount": "USD", "Measure": ""},
-            )
-            fig.update_traces(texttemplate="$%{text:,.0f}", marker_color="#1f8a5b")
-            fig.update_layout(height=330, margin=dict(l=10, r=10, t=20, b=10), xaxis_tickangle=-25)
-            st.plotly_chart(fig, use_container_width=True)
-        with roi_cols[1]:
-            st.dataframe(
-                summary_rows,
-                use_container_width=True,
-                hide_index=True,
-            )
+        fig.update_traces(texttemplate="$%{text:,.0f}", marker_color="#1f8a5b")
+        fig.update_layout(height=330, margin=dict(l=10, r=10, t=20, b=10), xaxis_tickangle=-25)
+        st.plotly_chart(fig, use_container_width=True)
+    with roi_cols[1]:
+        st.dataframe(
+            summary_rows,
+            use_container_width=True,
+            hide_index=True,
+        )
 
     if report_type in {"Comprehensive finance packet", "Savings by category"}:
         st.subheader("Savings by Category")
