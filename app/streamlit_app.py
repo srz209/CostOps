@@ -874,10 +874,160 @@ def chart_html(fig):
     return fig.to_html(full_html=False, include_plotlyjs=False, config={"displayModeBar": False})
 
 
+def report_timestamp():
+    return pd.Timestamp.now(tz="America/New_York")
+
+
+def report_filename(report_type, generated_at):
+    slug = report_type.lower().replace(" ", "_")
+    timestamp = generated_at.strftime("%Y-%m-%d_%H%M")
+    return f"{slug}_{timestamp}.html"
+
+
+def executive_report_context(
+    report_type,
+    period,
+    total_spend,
+    realized,
+    projected,
+    annualized_opportunity,
+    open_missed,
+    scan_cost,
+    scan_roi,
+    net_monthly_benefit,
+    recommendations_open,
+    recommendations_realized,
+    monthly_opportunity,
+    realized_monthly,
+    category_report,
+    team_report,
+    unresolved,
+    owner_report,
+    scan_report,
+):
+    rows = [
+        ("Time range", period),
+        ("Report type", report_type),
+        ("Estimated monthly spend", money(total_spend)),
+        (f"{period} realized savings", money(realized)),
+        (f"{period} projected savings", money(projected)),
+        ("Annualized savings opportunity", money(annualized_opportunity)),
+        ("Unresolved missed savings", money(open_missed)),
+        ("Open recommendations", f"{recommendations_open:,}"),
+        ("Realized recommendations", f"{recommendations_realized:,}"),
+        ("Latest scan cost", money(scan_cost)),
+        ("Savings found per $1 scan cost", money(scan_roi)),
+        ("Net monthly benefit found", money(net_monthly_benefit)),
+    ]
+
+    narrative = (
+        f"This comprehensive packet shows {money(realized)} in {period} realized savings, "
+        f"{money(projected)} in projected savings, and {money(open_missed)} in unresolved missed savings. "
+        f"The latest scan found {money(scan_roi)} in monthly opportunity for every estimated dollar of scan cost."
+    )
+
+    if report_type == "Savings by category" and not category_report.empty:
+        top_projected = category_report.sort_values("projected_monthly_savings", ascending=False).iloc[0]
+        top_missed = category_report.sort_values("missed_savings", ascending=False).iloc[0]
+        top_realized = category_report.sort_values("realized_monthly_savings", ascending=False).iloc[0]
+        rows.extend(
+            [
+                ("Top projected category", f"{top_projected['category']} - {money(top_projected['projected_monthly_savings'])}/mo"),
+                ("Top realized category", f"{top_realized['category']} - {money(top_realized['realized_monthly_savings'])}/mo"),
+                ("Highest unresolved category", f"{top_missed['category']} - {money(top_missed['missed_savings'])} missed"),
+            ]
+        )
+        narrative = (
+            f"The category report shows {top_projected['category']} as the largest monthly savings opportunity at "
+            f"{money(top_projected['projected_monthly_savings'])}. {top_realized['category']} has the highest realized "
+            f"monthly savings at {money(top_realized['realized_monthly_savings'])}, while {top_missed['category']} has "
+            f"the most unresolved missed savings at {money(top_missed['missed_savings'])}."
+        )
+    elif report_type == "Savings by team" and not team_report.empty:
+        top_projected = team_report.sort_values("projected_monthly_savings", ascending=False).iloc[0]
+        top_missed = team_report.sort_values("missed_savings", ascending=False).iloc[0]
+        top_realized = team_report.sort_values("realized_monthly_savings", ascending=False).iloc[0]
+        rows.extend(
+            [
+                ("Top projected team", f"{top_projected['team']} - {money(top_projected['projected_monthly_savings'])}/mo"),
+                ("Top realized team", f"{top_realized['team']} - {money(top_realized['realized_monthly_savings'])}/mo"),
+                ("Highest unresolved team", f"{top_missed['team']} - {money(top_missed['missed_savings'])} missed"),
+            ]
+        )
+        narrative = (
+            f"The team report shows {top_projected['team']} as the largest monthly savings opportunity at "
+            f"{money(top_projected['projected_monthly_savings'])}. {top_realized['team']} has the highest realized "
+            f"monthly savings at {money(top_realized['realized_monthly_savings'])}, while {top_missed['team']} has "
+            f"the most unresolved missed savings at {money(top_missed['missed_savings'])}."
+        )
+    elif report_type == "Unresolved opportunity":
+        daily_exposure = unresolved["projected_daily_savings"].sum()
+        top_open = unresolved.iloc[0] if not unresolved.empty else None
+        rows.extend(
+            [
+                ("Open daily cost exposure", money(daily_exposure)),
+                (
+                    "Largest unresolved item",
+                    "None"
+                    if top_open is None
+                    else f"{top_open['recommendation_id']} - {money(top_open['missed_savings_to_date'])} missed",
+                ),
+            ]
+        )
+        narrative = (
+            f"The unresolved opportunity report focuses on avoidable cost that is still aging. The filtered backlog has "
+            f"{recommendations_open:,} open items, representing {money(daily_exposure)} in daily savings exposure and "
+            f"{money(open_missed)} in missed savings to date."
+        )
+    elif report_type == "Owner accountability" and not owner_report.empty:
+        top_owner = owner_report.sort_values("missed_savings", ascending=False).iloc[0]
+        top_realized = owner_report.sort_values("realized_monthly_savings", ascending=False).iloc[0]
+        rows.extend(
+            [
+                ("Highest unresolved owner", f"{top_owner['owner']} - {money(top_owner['missed_savings'])} missed"),
+                ("Highest realized owner", f"{top_realized['owner']} - {money(top_realized['realized_monthly_savings'])}/mo"),
+                ("Open items for highest unresolved owner", f"{int(top_owner['open_items']):,}"),
+            ]
+        )
+        narrative = (
+            f"The owner accountability report highlights ownership of unresolved savings. {top_owner['owner']} has the "
+            f"largest unresolved missed savings at {money(top_owner['missed_savings'])}, while {top_realized['owner']} "
+            f"has the highest realized monthly savings at {money(top_realized['realized_monthly_savings'])}."
+        )
+    elif report_type == "Scan ROI history":
+        successful_scans = int((scan_report["status"] == "SUCCEEDED").sum()) if "status" in scan_report else len(scan_report)
+        avg_scan_cost = scan_report["scan_cost_usd"].mean() if not scan_report.empty else 0
+        avg_roi = scan_report["savings_per_scan_dollar"].mean() if not scan_report.empty else 0
+        rows.extend(
+            [
+                ("Successful scans", f"{successful_scans:,}"),
+                ("Average scan cost", money(avg_scan_cost)),
+                ("Average savings found per $1 scan cost", money(avg_roi)),
+            ]
+        )
+        narrative = (
+            f"The scan ROI report shows whether analysis runs are economically justified. Across the filtered view, "
+            f"the latest scan cost is {money(scan_cost)} and found {money(scan_roi)} in monthly opportunity for every "
+            f"estimated dollar of scan cost."
+        )
+    elif report_type == "Executive ROI summary":
+        realization_rate = realized_monthly / monthly_opportunity if monthly_opportunity else 0
+        rows.append(("Realization rate", f"{realization_rate:.0%}"))
+        narrative = (
+            f"The executive ROI report summarizes financial impact for leadership. It shows {money(realized)} in "
+            f"{period} realized savings, {money(projected)} in projected savings, and a {realization_rate:.0%} "
+            f"monthly realization rate for the current filtered view."
+        )
+
+    return narrative, pd.DataFrame(rows, columns=["Metric", "Value"])
+
+
 def build_finance_packet_html(
     report_type,
     period,
     filters,
+    generated_at,
+    executive_narrative,
     summary_rows,
     roi_bridge,
     category_report,
@@ -888,7 +1038,7 @@ def build_finance_packet_html(
     backlog_export,
     event_view,
 ):
-    generated_ts = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %I:%M %p %Z")
+    generated_ts = generated_at.strftime("%Y-%m-%d %I:%M %p %Z")
     filter_rows = pd.DataFrame(
         [
             ("Report", report_type),
@@ -1002,9 +1152,7 @@ def build_finance_packet_html(
     executive_section = f"""
   <h2>Executive Summary</h2>
   <p>
-    This report reflects the current filtered view and shows the savings impact, remaining opportunity,
-    and supporting audit evidence needed to validate ROI. The figures update based on the selected time
-    range, category, team, owner, status, and severity filters.
+    {escape(executive_narrative)}
   </p>
   <h2>Executive ROI Summary</h2>
   <div class="metric-grid">{summary_cards}</div>
@@ -1141,23 +1289,6 @@ def reports_page():
     scan_roi = monthly_opportunity / scan_cost if scan_cost else 0
     net_monthly_benefit = monthly_opportunity - scan_cost
 
-    summary_rows = pd.DataFrame(
-        [
-            ("Time range", period),
-            ("Report type", report_type),
-            ("Estimated monthly spend", money(total_spend)),
-            (f"{period} realized savings", money(realized)),
-            (f"{period} projected savings", money(projected)),
-            ("Annualized savings opportunity", money(annualized_opportunity)),
-            ("Unresolved missed savings", money(open_missed)),
-            ("Open recommendations", f"{recommendations_open:,}"),
-            ("Realized recommendations", f"{recommendations_realized:,}"),
-            ("Latest scan cost", money(scan_cost)),
-            ("Savings found per $1 scan cost", money(scan_roi)),
-            ("Net monthly benefit found", money(net_monthly_benefit)),
-        ],
-        columns=["Metric", "Value"],
-    )
     roi_bridge = pd.DataFrame(
         [
             ("Current monthly spend", total_spend),
@@ -1239,6 +1370,28 @@ def reports_page():
         event_view = event_view[event_view["owner"] == owner]
     if team != "All":
         event_view = event_view[event_view["team"] == team]
+    executive_narrative, summary_rows = executive_report_context(
+        report_type,
+        period,
+        total_spend,
+        realized,
+        projected,
+        annualized_opportunity,
+        open_missed,
+        scan_cost,
+        scan_roi,
+        net_monthly_benefit,
+        recommendations_open,
+        recommendations_realized,
+        monthly_opportunity,
+        realized_monthly,
+        category_report,
+        team_report,
+        unresolved,
+        owner_report,
+        scan_report,
+    )
+    generated_at = report_timestamp()
     finance_packet_html = build_finance_packet_html(
         report_type,
         period,
@@ -1249,6 +1402,8 @@ def reports_page():
             "status": status,
             "severity": severity,
         },
+        generated_at,
+        executive_narrative,
         summary_rows,
         roi_bridge,
         category_report,
@@ -1264,7 +1419,7 @@ def reports_page():
     download_col.download_button(
         f"Download {report_type}",
         finance_packet_html,
-        file_name=f"{report_type.lower().replace(' ', '_')}.html",
+        file_name=report_filename(report_type, generated_at),
         mime="text/html",
     )
 
@@ -1283,18 +1438,7 @@ def reports_page():
     )
 
     st.subheader("Executive Summary")
-    realized_label = money(realized).replace("$", "\\$")
-    projected_label = money(projected).replace("$", "\\$")
-    open_missed_label = money(open_missed).replace("$", "\\$")
-    scan_roi_label = money(scan_roi).replace("$", "\\$")
-    st.markdown(
-        f"""
-        This report shows **{realized_label}** in {period} realized savings and **{projected_label}** in
-        projected savings from the filtered recommendation set. Current unresolved items represent
-        **{open_missed_label}** in missed savings to date, while the latest scan found **{scan_roi_label}**
-        in monthly savings opportunity for every estimated dollar of scan cost.
-        """
-    )
+    st.write(executive_narrative)
     st.subheader("Executive ROI Summary")
     roi_cols = st.columns([1, 1])
     with roi_cols[0]:
@@ -1509,6 +1653,7 @@ def reports_page():
         use_container_width=True,
         hide_index=True,
     )
+    st.caption(f"Report generated at {generated_at.strftime('%Y-%m-%d %I:%M %p %Z')}.")
 
 
 def scan_control_page_section(credit_price):
