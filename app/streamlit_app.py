@@ -1727,6 +1727,7 @@ def reports_page():
             use_container_width=True,
         )
     with action_cols[3]:
+        st.markdown('<div class="download-spacer"></div>', unsafe_allow_html=True)
         st.caption(
             f"Sections: {', '.join(selected_sections) if selected_sections else 'Executive summary only'} | "
             f"Format: {download_format}"
