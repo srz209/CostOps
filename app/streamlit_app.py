@@ -119,6 +119,14 @@ st.markdown(
 )
 
 DEFAULT_CREDIT_PRICE = 3.0
+ACTIONABLE_STATUSES = {
+    "Selected": ("SELECTED", "Selected for active review."),
+    "Accepted": ("ACCEPTED", "Accepted for implementation planning."),
+    "Deferred": ("DEFERRED", "Deferred for a future optimization cycle."),
+    "Rejected": ("REJECTED", "Rejected after review."),
+    "Implemented": ("IMPLEMENTED", "Marked as implemented by the owner."),
+    "Realized": ("SAVINGS_REALIZED", "Validated as realized savings."),
+}
 
 
 @st.cache_data
@@ -138,10 +146,60 @@ def get_snowflake_config():
         return {}
 
 
+def log_recommendation_event(recommendation_id, event_type, actor, details):
+    events = st.session_state["recommendation_events_workflow"].copy()
+    next_id = f"EVT-DEMO-{len(events) + 1:03d}"
+    new_event = pd.DataFrame(
+        [
+            {
+                "event_id": next_id,
+                "recommendation_id": recommendation_id,
+                "event_ts": AS_OF_DATE + pd.Timedelta(hours=12, minutes=len(events) % 60),
+                "event_type": event_type,
+                "actor": actor,
+                "details": details,
+            }
+        ]
+    )
+    st.session_state["recommendation_events_workflow"] = pd.concat([events, new_event], ignore_index=True)
+
+
+def update_recommendation_status(recommendation_id, new_status, actor, notes):
+    workflow = st.session_state["recommendations_workflow"].copy()
+    mask = workflow["recommendation_id"] == recommendation_id
+    if not mask.any():
+        return
+
+    now = AS_OF_DATE + pd.Timedelta(hours=12)
+    event_type, default_detail = ACTIONABLE_STATUSES[new_status]
+    workflow.loc[mask, "status"] = new_status
+    workflow.loc[mask, "last_seen_at"] = AS_OF_DATE
+
+    if new_status in {"Accepted", "Implemented", "Realized"} and workflow.loc[mask, "accepted_at"].isna().any():
+        workflow.loc[mask, "accepted_at"] = now
+    if new_status in {"Implemented", "Realized"}:
+        workflow.loc[mask, "implemented_at"] = now
+    if new_status == "Realized":
+        unrealized = workflow.loc[mask, "realized_monthly_savings"].fillna(0) == 0
+        if unrealized.any():
+            workflow.loc[mask, "realized_monthly_savings"] = (
+                workflow.loc[mask, "projected_monthly_savings"] * 0.85
+            ).round(0).astype(int)
+
+    st.session_state["recommendations_workflow"] = workflow
+    details = notes.strip() if notes and notes.strip() else default_detail
+    log_recommendation_event(recommendation_id, event_type, actor, details)
+
+
 data = load_data()
 AS_OF_DATE = pd.Timestamp("2026-05-18")
-recommendations = enrich_recommendation_lifecycle(data["recommendations"], AS_OF_DATE)
-recommendation_events = data["recommendation_events"]
+if "recommendations_workflow" not in st.session_state:
+    st.session_state["recommendations_workflow"] = data["recommendations"].copy()
+if "recommendation_events_workflow" not in st.session_state:
+    st.session_state["recommendation_events_workflow"] = data["recommendation_events"].copy()
+
+recommendations = enrich_recommendation_lifecycle(st.session_state["recommendations_workflow"], AS_OF_DATE)
+recommendation_events = st.session_state["recommendation_events_workflow"]
 scan_runs = data["scan_runs"]
 warehouses = data["warehouses"]
 data_source_status = "Sample data loaded"
@@ -387,10 +445,46 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
             unsafe_allow_html=True,
         )
         st.write(rec["evidence"])
-        st.text_area("Implementation notes", value="", placeholder="Add validation notes, owner, or implementation decision.", height=90)
+        actor = st.selectbox(
+            "Action owner",
+            sorted(recommendations["owner"].dropna().unique().tolist()),
+            index=sorted(recommendations["owner"].dropna().unique().tolist()).index(rec["owner"]),
+            key=f"{selected_recommendation_id}_actor",
+        )
+        notes = st.text_area(
+            "Workflow notes",
+            value="",
+            placeholder="Add validation notes, owner handoff, or implementation decision.",
+            height=80,
+            key=f"{selected_recommendation_id}_notes",
+        )
+        action_cols = st.columns(6)
+        action_labels = [
+            ("Select", "Selected"),
+            ("Accept", "Accepted"),
+            ("Defer", "Deferred"),
+            ("Reject", "Rejected"),
+            ("Implemented", "Implemented"),
+            ("Realized", "Realized"),
+        ]
+        for col, (label, status) in zip(action_cols, action_labels):
+            disabled = rec["status"] == status
+            if col.button(label, disabled=disabled, key=f"{selected_recommendation_id}_{status}"):
+                update_recommendation_status(selected_recommendation_id, status, actor, notes)
+                st.toast(f"{selected_recommendation_id} moved to {status}.")
+                st.rerun()
     with right:
         st.caption("Generated SQL or implementation guidance")
         st.code(rec["generated_sql"], language="sql")
+        if st.button("Log SQL copied", key=f"{selected_recommendation_id}_copy_sql"):
+            log_recommendation_event(
+                selected_recommendation_id,
+                "SQL_COPIED",
+                rec["owner"],
+                "Copied generated SQL or implementation guidance from the recommendation detail.",
+            )
+            st.toast("SQL copy event logged.")
+            st.rerun()
         st.caption("Lifecycle")
         lifecycle = pd.DataFrame(
             [
@@ -403,6 +497,16 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
             columns=["Milestone", "Value"],
         )
         st.dataframe(lifecycle, use_container_width=True, hide_index=True)
+        st.caption("Recent audit events")
+        rec_events = recommendation_events[recommendation_events["recommendation_id"] == selected_recommendation_id]
+        if rec_events.empty:
+            st.info("No events logged yet.")
+        else:
+            st.dataframe(
+                rec_events.sort_values("event_ts", ascending=False).head(5),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 def overview():
