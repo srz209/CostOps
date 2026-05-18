@@ -11,9 +11,25 @@ SCAN_RUNS_STATE_FILE = RUNTIME_STATE_DIR / "scan_runs.csv"
 RECOMMENDATION_STATE_KEY = "recommendations_workflow"
 EVENT_STATE_KEY = "recommendation_events_workflow"
 SCAN_RUN_STATE_KEY = "scan_runs_workflow"
-RECOMMENDATION_DATE_COLUMNS = ["first_seen_at", "last_seen_at", "accepted_at", "implemented_at"]
+RECOMMENDATION_DATE_COLUMNS = [
+    "first_seen_at",
+    "last_seen_at",
+    "accepted_at",
+    "implemented_at",
+    "due_date",
+    "last_note_at",
+    "assignment_updated_at",
+]
 EVENT_DATE_COLUMNS = ["event_ts"]
 SCAN_RUN_DATE_COLUMNS = ["started_at", "completed_at"]
+DEFAULT_ROLE_BY_TEAM = {
+    "Data Platform": "Platform Architect",
+    "Data Engineering": "Data Engineer",
+    "Analytics Engineering": "Analytics Engineer",
+    "Business Intelligence": "BI Lead",
+    "Data Governance": "Governance Lead",
+}
+DEFAULT_DUE_DAYS = {"Critical": 7, "High": 14, "Medium": 30, "Low": 45}
 
 ACTIONABLE_STATUSES = {
     "Selected": ("SELECTED", "Selected for active review."),
@@ -27,11 +43,11 @@ ACTIONABLE_STATUSES = {
 
 def initialize_session_store(session_state, recommendations, recommendation_events, scan_runs=None):
     if RECOMMENDATION_STATE_KEY not in session_state:
-        session_state[RECOMMENDATION_STATE_KEY] = _load_state_file(
+        session_state[RECOMMENDATION_STATE_KEY] = ensure_recommendation_columns(_load_state_file(
             RECOMMENDATIONS_STATE_FILE,
             recommendations,
             RECOMMENDATION_DATE_COLUMNS,
-        )
+        ))
     if EVENT_STATE_KEY not in session_state:
         session_state[EVENT_STATE_KEY] = _load_state_file(EVENTS_STATE_FILE, recommendation_events, EVENT_DATE_COLUMNS)
     if scan_runs is not None and SCAN_RUN_STATE_KEY not in session_state:
@@ -41,7 +57,11 @@ def initialize_session_store(session_state, recommendations, recommendation_even
 def _load_state_file(path, fallback, date_columns):
     if not path.exists():
         return fallback.copy()
-    return pd.read_csv(path, parse_dates=date_columns)
+    df = pd.read_csv(path)
+    for column in date_columns:
+        if column in df.columns:
+            df[column] = pd.to_datetime(df[column], errors="coerce")
+    return df
 
 
 def persist_session_store(session_state):
@@ -53,7 +73,9 @@ def persist_session_store(session_state):
 
 
 def recommendations_frame(session_state):
-    return session_state[RECOMMENDATION_STATE_KEY]
+    workflow = ensure_recommendation_columns(session_state[RECOMMENDATION_STATE_KEY])
+    session_state[RECOMMENDATION_STATE_KEY] = workflow
+    return workflow
 
 
 def recommendation_events_frame(session_state):
@@ -122,14 +144,64 @@ def update_recommendation_status(session_state, recommendation_id, new_status, a
     return True
 
 
+def update_recommendation_assignment(session_state, recommendation_id, owner, team, role, due_date, notes, actor, as_of_date):
+    workflow = ensure_recommendation_columns(session_state[RECOMMENDATION_STATE_KEY].copy())
+    mask = workflow["recommendation_id"] == recommendation_id
+    if not mask.any():
+        return False
+
+    now = pd.Timestamp(as_of_date).normalize() + pd.Timedelta(hours=12)
+    current = workflow.loc[mask].iloc[0]
+    owner_changed = str(current["owner"]) != str(owner)
+    team_changed = str(current["team"]) != str(team)
+    role_changed = str(current["role"]) != str(role)
+    due_changed = not same_day(current["due_date"], due_date)
+
+    workflow.loc[mask, "owner"] = owner
+    workflow.loc[mask, "team"] = team
+    workflow.loc[mask, "role"] = role
+    workflow.loc[mask, "due_date"] = pd.Timestamp(due_date)
+    workflow.loc[mask, "assignment_updated_at"] = now
+
+    note_text = notes.strip() if notes else ""
+    if note_text:
+        workflow.loc[mask, "work_notes"] = note_text
+        workflow.loc[mask, "last_note_at"] = now
+
+    session_state[RECOMMENDATION_STATE_KEY] = workflow
+
+    if owner_changed or team_changed or role_changed or due_changed:
+        detail = (
+            f"Assignment updated to {owner} / {team} / {role}; due "
+            f"{pd.Timestamp(due_date).strftime('%Y-%m-%d')}."
+        )
+        log_recommendation_event(session_state, recommendation_id, "OWNERSHIP_UPDATED", actor, detail, now)
+    if note_text:
+        log_recommendation_event(session_state, recommendation_id, "WORK_NOTE_ADDED", actor, note_text, now)
+    return True
+
+
 def merge_scan_results(session_state, scan_result, actor, event_ts):
     generated = scan_result["recommendations"].copy()
-    workflow = session_state[RECOMMENDATION_STATE_KEY].copy()
+    workflow = ensure_recommendation_columns(session_state[RECOMMENDATION_STATE_KEY].copy())
+    generated = ensure_recommendation_columns(generated)
 
     if not generated.empty:
         existing_ids = set(workflow["recommendation_id"].astype(str))
         generated_ids = set(generated["recommendation_id"].astype(str))
-        preserved_columns = ["status", "accepted_at", "implemented_at", "realized_monthly_savings", "owner", "team"]
+        preserved_columns = [
+            "status",
+            "accepted_at",
+            "implemented_at",
+            "realized_monthly_savings",
+            "owner",
+            "team",
+            "role",
+            "due_date",
+            "work_notes",
+            "last_note_at",
+            "assignment_updated_at",
+        ]
 
         for rec_id in existing_ids & generated_ids:
             existing_row = workflow.loc[workflow["recommendation_id"] == rec_id].iloc[0]
@@ -156,3 +228,44 @@ def merge_scan_results(session_state, scan_result, actor, event_ts):
         event_ts,
     )
     persist_session_store(session_state)
+
+
+def ensure_recommendation_columns(recommendations):
+    workflow = recommendations.copy()
+    if "role" not in workflow.columns:
+        workflow["role"] = workflow["team"].map(DEFAULT_ROLE_BY_TEAM).fillna("Optimization Lead")
+    else:
+        workflow["role"] = workflow["role"].fillna(workflow["team"].map(DEFAULT_ROLE_BY_TEAM)).fillna("Optimization Lead")
+
+    if "due_date" not in workflow.columns:
+        workflow["due_date"] = workflow.apply(default_due_date, axis=1)
+    else:
+        workflow["due_date"] = pd.to_datetime(workflow["due_date"], errors="coerce")
+        workflow.loc[workflow["due_date"].isna(), "due_date"] = workflow.loc[workflow["due_date"].isna()].apply(default_due_date, axis=1)
+
+    if "work_notes" not in workflow.columns:
+        workflow["work_notes"] = ""
+    else:
+        workflow["work_notes"] = workflow["work_notes"].fillna("")
+
+    if "last_note_at" not in workflow.columns:
+        workflow["last_note_at"] = pd.NaT
+    if "assignment_updated_at" not in workflow.columns:
+        workflow["assignment_updated_at"] = workflow["last_seen_at"]
+    else:
+        workflow["assignment_updated_at"] = pd.to_datetime(workflow["assignment_updated_at"], errors="coerce")
+        workflow["assignment_updated_at"] = workflow["assignment_updated_at"].fillna(workflow["last_seen_at"])
+    return workflow
+
+
+def default_due_date(row):
+    base = pd.Timestamp(row["first_seen_at"]).normalize()
+    return base + pd.Timedelta(days=DEFAULT_DUE_DAYS.get(row.get("severity"), 30))
+
+
+def same_day(current_value, new_value):
+    if pd.isna(current_value) and pd.isna(new_value):
+        return True
+    if pd.isna(current_value) or pd.isna(new_value):
+        return False
+    return pd.Timestamp(current_value).normalize() == pd.Timestamp(new_value).normalize()

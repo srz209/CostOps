@@ -1,3 +1,6 @@
+import pandas as pd
+
+
 def money(value):
     return f"${value:,.0f}"
 
@@ -34,6 +37,19 @@ def enrich_recommendation_lifecycle(recommendations, as_of_date):
     enriched["days_since_implementation"] = (as_of - implemented).dt.days
     enriched.loc[enriched["implemented_at"].isna(), "days_since_implementation"] = None
     enriched["is_open"] = ~enriched["status"].isin(["Implemented", "Realized", "Rejected"])
+    due_dates = pd.to_datetime(enriched["due_date"], errors="coerce").dt.normalize()
+    enriched["days_to_due"] = (due_dates - as_of).dt.days
+    enriched["is_overdue"] = enriched["is_open"] & (enriched["days_to_due"] < 0)
+    enriched["ownership_lane"] = enriched.apply(
+        lambda row: "Overdue"
+        if row["is_overdue"]
+        else "Due this week"
+        if row["is_open"] and row["days_to_due"] <= 7
+        else "Assigned"
+        if row["is_open"]
+        else "Closed",
+        axis=1,
+    )
     return enriched
 
 

@@ -3,6 +3,7 @@ import json
 
 import pandas as pd
 
+from costops.data.recommendation_store import ensure_recommendation_columns
 from costops.data.snowflake_loader import connect
 
 
@@ -43,10 +44,11 @@ def log_sql_copied(config, recommendation_id, actor):
 
 
 def persist_analysis_result(config, scan_result):
+    recommendations = ensure_recommendation_columns(scan_result["recommendations"])
     with connect(config) as conn:
         with conn.cursor() as cursor:
             upsert_scan_run(cursor, scan_result["scan_run"])
-            for _, recommendation in scan_result["recommendations"].iterrows():
+            for _, recommendation in recommendations.iterrows():
                 upsert_recommendation(cursor, recommendation)
             for _, finding in scan_result["findings"].iterrows():
                 insert_finding(cursor, finding)
@@ -164,10 +166,15 @@ def upsert_recommendation(cursor, recommendation):
                 %s AS recommendation_status,
                 %s AS owner_name,
                 %s AS team_name,
+                %s AS owner_role,
+                %s AS due_date,
                 %s AS generated_sql,
                 %s AS evidence,
+                %s AS work_notes,
                 %s AS first_seen_at,
-                %s AS last_seen_at
+                %s AS last_seen_at,
+                %s AS last_note_at,
+                %s AS assignment_updated_at
         ) source
         ON target.recommendation_id = source.recommendation_id
         WHEN MATCHED THEN UPDATE SET
@@ -185,9 +192,14 @@ def upsert_recommendation(cursor, recommendation):
             implementation_effort = source.implementation_effort,
             owner_name = source.owner_name,
             team_name = source.team_name,
+            owner_role = source.owner_role,
+            due_date = source.due_date,
             generated_sql = source.generated_sql,
             evidence = source.evidence,
+            work_notes = source.work_notes,
             last_seen_at = source.last_seen_at,
+            last_note_at = source.last_note_at,
+            assignment_updated_at = source.assignment_updated_at,
             updated_at = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN INSERT (
             recommendation_id,
@@ -206,10 +218,15 @@ def upsert_recommendation(cursor, recommendation):
             recommendation_status,
             owner_name,
             team_name,
+            owner_role,
+            due_date,
             generated_sql,
             evidence,
+            work_notes,
             first_seen_at,
-            last_seen_at
+            last_seen_at,
+            last_note_at,
+            assignment_updated_at
         )
         VALUES (
             source.recommendation_id,
@@ -228,10 +245,15 @@ def upsert_recommendation(cursor, recommendation):
             source.recommendation_status,
             source.owner_name,
             source.team_name,
+            source.owner_role,
+            source.due_date,
             source.generated_sql,
             source.evidence,
+            source.work_notes,
             source.first_seen_at,
-            source.last_seen_at
+            source.last_seen_at,
+            source.last_note_at,
+            source.assignment_updated_at
         )
         """,
         (
@@ -251,10 +273,15 @@ def upsert_recommendation(cursor, recommendation):
             recommendation["status"],
             recommendation["owner"],
             recommendation["team"],
+            recommendation["role"],
+            clean_value(recommendation["due_date"]),
             recommendation["generated_sql"],
             recommendation["evidence"],
+            recommendation.get("work_notes", ""),
             clean_value(recommendation["first_seen_at"]),
             clean_value(recommendation["last_seen_at"]),
+            clean_value(recommendation.get("last_note_at")),
+            clean_value(recommendation.get("assignment_updated_at")),
         ),
     )
 

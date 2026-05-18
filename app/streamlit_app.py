@@ -24,6 +24,7 @@ from costops.data.recommendation_store import (
     recommendation_events_frame,
     recommendations_frame,
     scan_runs_frame,
+    update_recommendation_assignment,
     update_recommendation_status,
 )
 from costops.data.snowflake_repository import initialize_app_schema, persist_analysis_result
@@ -248,6 +249,7 @@ status_options = ["All"] + sorted(recommendations["status"].unique().tolist())
 category_options = ["All"] + sorted(recommendations["category"].unique().tolist())
 owner_options = ["All"] + sorted(recommendations["owner"].unique().tolist())
 team_options = ["All"] + sorted(recommendations["team"].unique().tolist())
+role_options = ["All"] + sorted(recommendations["role"].unique().tolist())
 
 def scan_schedule_page():
     st.title("Scan & Schedule")
@@ -350,11 +352,14 @@ def recommendation_table(df, key="recommendation_table", selectable=False, heigh
             "object_name",
             "owner",
             "team",
+            "role",
+            "due_date",
             "confidence",
             "projected_daily_savings",
             "projected_monthly_savings",
             "missed_savings_to_date",
             "days_lingering",
+            "days_to_due",
             "risk",
             "effort",
             "status",
@@ -376,6 +381,8 @@ def recommendation_table(df, key="recommendation_table", selectable=False, heigh
             "projected_monthly_savings": st.column_config.NumberColumn("Monthly Savings", format="$%d"),
             "missed_savings_to_date": st.column_config.NumberColumn("Missed Savings", format="$%d"),
             "days_lingering": st.column_config.NumberColumn("Days Since First Seen", format="%d"),
+            "days_to_due": st.column_config.NumberColumn("Days to Due", format="%d"),
+            "due_date": st.column_config.DateColumn("Due date", format="YYYY-MM-DD"),
             "confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1),
         },
     }
@@ -418,6 +425,7 @@ def render_filter_chips(df):
             <div class="compact-chip">Savings <strong>{money(df["projected_monthly_savings"].sum())}</strong></div>
             <div class="compact-chip">Missed <strong>{money(df["missed_savings_to_date"].sum())}</strong></div>
             <div class="compact-chip">Avg age <strong>{avg_age}</strong></div>
+            <div class="compact-chip">Overdue <strong>{int(df["is_overdue"].sum()) if not df.empty else 0}</strong></div>
             <div class="compact-chip">Realized <strong>{money(df["realized_monthly_savings"].sum())}</strong></div>
         </div>
         """,
@@ -441,26 +449,66 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
                 <div class="compact-chip">Monthly <strong>{money(rec["projected_monthly_savings"])}</strong></div>
                 <div class="compact-chip">Missed <strong>{money(rec["missed_savings_to_date"])}</strong></div>
                 <div class="compact-chip">Age <strong>{rec["days_lingering"]} days</strong></div>
+                <div class="compact-chip">Due <strong>{pd.Timestamp(rec["due_date"]).strftime('%Y-%m-%d')}</strong></div>
             </div>
             <div class="compact-meta">
-                {rec["object_name"]} | {rec["category"]} / {rec["subcategory"]} | {rec["owner"]} | {rec["team"]} | {rec["status"]}
+                {rec["object_name"]} | {rec["category"]} / {rec["subcategory"]} | {rec["owner"]} | {rec["team"]} | {rec["role"]} | {rec["status"]}
             </div>
             """,
             unsafe_allow_html=True,
         )
         st.write(rec["evidence"])
-        actor = st.selectbox(
-            "Action owner",
-            sorted(recommendations["owner"].dropna().unique().tolist()),
-            index=sorted(recommendations["owner"].dropna().unique().tolist()).index(rec["owner"]),
-            key=f"{selected_recommendation_id}_actor",
+        assignment_cols = st.columns([1.05, 1.05, 1.05, 0.9])
+        owner_choices = sorted(recommendations["owner"].dropna().unique().tolist())
+        team_choices = sorted(recommendations["team"].dropna().unique().tolist())
+        role_choices = sorted(recommendations["role"].dropna().unique().tolist())
+        assigned_owner = assignment_cols[0].selectbox(
+            "Owner",
+            owner_choices,
+            index=owner_choices.index(rec["owner"]),
+            key=f"{selected_recommendation_id}_owner",
+        )
+        assigned_team = assignment_cols[1].selectbox(
+            "Team",
+            team_choices,
+            index=team_choices.index(rec["team"]),
+            key=f"{selected_recommendation_id}_team",
+        )
+        assigned_role = assignment_cols[2].selectbox(
+            "Role",
+            role_choices,
+            index=role_choices.index(rec["role"]),
+            key=f"{selected_recommendation_id}_role",
+        )
+        due_date = assignment_cols[3].date_input(
+            "Due date",
+            value=pd.Timestamp(rec["due_date"]).date(),
+            key=f"{selected_recommendation_id}_due_date",
         )
         notes = st.text_area(
-            "Workflow notes",
-            value="",
-            placeholder="Add validation notes, owner handoff, or implementation decision.",
+            "Ownership notes",
+            value=rec.get("work_notes", ""),
+            placeholder="Add handoff context, dependency notes, or owner commitments.",
             height=80,
             key=f"{selected_recommendation_id}_notes",
+        )
+        assignment_action_cols = st.columns([1, 2.2])
+        if assignment_action_cols[0].button("Save ownership", key=f"{selected_recommendation_id}_save_assignment", type="primary"):
+            update_recommendation_assignment(
+                st.session_state,
+                selected_recommendation_id,
+                assigned_owner,
+                assigned_team,
+                assigned_role,
+                due_date,
+                notes,
+                assigned_owner,
+                AS_OF_DATE,
+            )
+            st.toast(f"{selected_recommendation_id} ownership updated.")
+            st.rerun()
+        assignment_action_cols[1].caption(
+            "Use ownership to route work by person, team, or role. Saved notes stay attached to the recommendation."
         )
         action_cols = st.columns(6)
         action_labels = [
@@ -474,20 +522,29 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
         for col, (label, status) in zip(action_cols, action_labels):
             disabled = rec["status"] == status
             if col.button(label, disabled=disabled, key=f"{selected_recommendation_id}_{status}"):
-                update_recommendation_status(st.session_state, selected_recommendation_id, status, actor, notes, AS_OF_DATE)
+                update_recommendation_status(
+                    st.session_state,
+                    selected_recommendation_id,
+                    status,
+                    assigned_owner,
+                    notes,
+                    AS_OF_DATE,
+                )
                 st.toast(f"{selected_recommendation_id} moved to {status}.")
                 st.rerun()
     with right:
         st.caption("Generated SQL or implementation guidance")
         st.code(rec["generated_sql"], language="sql")
         if st.button("Log SQL copied", key=f"{selected_recommendation_id}_copy_sql"):
-            log_sql_copied(st.session_state, selected_recommendation_id, rec["owner"], AS_OF_DATE + pd.Timedelta(hours=12))
+            log_sql_copied(st.session_state, selected_recommendation_id, assigned_owner, AS_OF_DATE + pd.Timedelta(hours=12))
             st.toast("SQL copy event logged.")
             st.rerun()
         st.caption("Lifecycle")
         lifecycle = pd.DataFrame(
             [
                 ("First seen", rec["first_seen_at"].date()),
+                ("Due date", pd.Timestamp(rec["due_date"]).date()),
+                ("Ownership lane", rec["ownership_lane"]),
                 ("Accepted", "" if pd.isna(rec["accepted_at"]) else rec["accepted_at"].date()),
                 ("Implemented", "" if pd.isna(rec["implemented_at"]) else rec["implemented_at"].date()),
                 ("Risk", rec["risk"]),
@@ -583,6 +640,88 @@ def recommendations_page():
         ascending=sort_ascending,
     )
     render_recommendation_detail(page_recs, selected_recommendation_id)
+
+
+def my_work_page():
+    st.title("My Work")
+    focus_cols = st.columns([0.8, 1.2, 0.9, 0.9, 1.1])
+    focus_mode = focus_cols[0].selectbox("View by", ["Owner", "Team", "Role"], index=0)
+    if focus_mode == "Owner":
+        focus_value = focus_cols[1].selectbox("Owner", sorted(recommendations["owner"].dropna().unique().tolist()))
+        my_recs = recommendations[recommendations["owner"] == focus_value]
+    elif focus_mode == "Team":
+        focus_value = focus_cols[1].selectbox("Team", sorted(recommendations["team"].dropna().unique().tolist()))
+        my_recs = recommendations[recommendations["team"] == focus_value]
+    else:
+        focus_value = focus_cols[1].selectbox("Role", sorted(recommendations["role"].dropna().unique().tolist()))
+        my_recs = recommendations[recommendations["role"] == focus_value]
+    open_only = focus_cols[2].toggle("Open only", value=True)
+    lane = focus_cols[3].selectbox("Lane", ["All", "Overdue", "Due this week", "Assigned", "Closed"], index=0)
+    category = focus_cols[4].selectbox("Category", category_options, index=0, key="my_work_category")
+
+    if open_only:
+        my_recs = my_recs[my_recs["is_open"]]
+    if lane != "All":
+        my_recs = my_recs[my_recs["ownership_lane"] == lane]
+    if category != "All":
+        my_recs = my_recs[my_recs["category"] == category]
+
+    overdue_count = int(my_recs["is_overdue"].sum()) if not my_recs.empty else 0
+    due_week = int(((my_recs["is_open"]) & (my_recs["days_to_due"] <= 7) & (my_recs["days_to_due"] >= 0)).sum()) if not my_recs.empty else 0
+    open_savings = my_recs.loc[my_recs["is_open"], "projected_monthly_savings"].sum() if not my_recs.empty else 0
+    missed = my_recs.loc[my_recs["is_open"], "missed_savings_to_date"].sum() if not my_recs.empty else 0
+
+    cols = st.columns(4)
+    cols[0].metric("Owned recommendations", f"{len(my_recs):,}")
+    cols[1].metric("Overdue", f"{overdue_count:,}")
+    cols[2].metric("Due in 7 days", f"{due_week:,}")
+    cols[3].metric("Open monthly savings", money(open_savings), money(missed))
+
+    st.caption(
+        f"{focus_mode} view for {focus_value}. Use this page as the working queue for assignments, due dates, and unresolved savings."
+    )
+
+    left, right = st.columns([1.15, 1])
+    with left:
+        lane_summary = my_recs.groupby("ownership_lane", as_index=False).agg(
+            recommendations=("recommendation_id", "count"),
+            projected_monthly_savings=("projected_monthly_savings", "sum"),
+        )
+        if lane_summary.empty:
+            st.info("No recommendations match the current ownership view.")
+        else:
+            fig = px.bar(
+                lane_summary,
+                x="ownership_lane",
+                y="projected_monthly_savings",
+                color="ownership_lane",
+                text="recommendations",
+                labels={"ownership_lane": "", "projected_monthly_savings": "Monthly Savings"},
+            )
+            fig.update_layout(height=320, margin=dict(l=10, r=10, t=20, b=10), showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+    with right:
+        due_queue = my_recs[
+            ["recommendation_id", "title", "status", "owner", "team", "role", "due_date", "days_to_due", "missed_savings_to_date"]
+        ].sort_values(["days_to_due", "missed_savings_to_date"], ascending=[True, False])
+        st.dataframe(
+            due_queue,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "missed_savings_to_date": st.column_config.NumberColumn("Missed Savings", format="$%d"),
+                "days_to_due": st.column_config.NumberColumn("Days to Due", format="%d"),
+            },
+        )
+
+    st.subheader("Owned Queue")
+    selected_recommendation_id = scrolling_recommendation_table(
+        my_recs.sort_values(["is_overdue", "missed_savings_to_date"], ascending=[False, False]),
+        page_size=20,
+        sort_by="missed_savings_to_date",
+        ascending=False,
+    )
+    render_recommendation_detail(my_recs, selected_recommendation_id)
 
 
 def warehouses_page():
@@ -834,7 +973,10 @@ def savings_realization_page():
         "title",
         "owner",
         "team",
+        "role",
         "status",
+        "due_date",
+        "days_to_due",
         "first_seen_at",
         "days_lingering",
         "projected_daily_savings",
@@ -850,6 +992,8 @@ def savings_realization_page():
             "missed_savings_to_date": st.column_config.NumberColumn("Missed Savings", format="$%d"),
             "realized_monthly_savings": st.column_config.NumberColumn("Realized Monthly", format="$%d"),
             "days_lingering": st.column_config.NumberColumn("Days Open", format="%d"),
+            "days_to_due": st.column_config.NumberColumn("Days to Due", format="%d"),
+            "due_date": st.column_config.DateColumn("Due date", format="YYYY-MM-DD"),
         },
     )
 
@@ -2191,6 +2335,7 @@ navigation_pages = {
     "Command Center": [
         st.Page(overview, title="Overview", icon=":material/space_dashboard:", default=True),
         st.Page(recommendations_page, title="Recommendations", icon=":material/rule_folder:"),
+        st.Page(my_work_page, title="My Work", icon=":material/badge:"),
         st.Page(scan_schedule_page, title="Scan & Schedule", icon=":material/schedule_send:"),
     ],
     "Analysis": [
