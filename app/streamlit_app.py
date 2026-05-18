@@ -11,6 +11,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from costops.data.sample_loader import load_sample_data
+from costops.data.recommendation_store import (
+    initialize_session_store,
+    log_sql_copied,
+    recommendation_events_frame,
+    recommendations_frame,
+    update_recommendation_status,
+)
+from costops.data.snowflake_repository import initialize_app_schema
 from costops.data.snowflake_loader import load_warehouse_metering_history, test_connection
 from costops.rules.rule_catalog import RULE_CATALOG
 from costops.services.metrics import (
@@ -119,14 +127,6 @@ st.markdown(
 )
 
 DEFAULT_CREDIT_PRICE = 3.0
-ACTIONABLE_STATUSES = {
-    "Selected": ("SELECTED", "Selected for active review."),
-    "Accepted": ("ACCEPTED", "Accepted for implementation planning."),
-    "Deferred": ("DEFERRED", "Deferred for a future optimization cycle."),
-    "Rejected": ("REJECTED", "Rejected after review."),
-    "Implemented": ("IMPLEMENTED", "Marked as implemented by the owner."),
-    "Realized": ("SAVINGS_REALIZED", "Validated as realized savings."),
-}
 
 
 @st.cache_data
@@ -146,60 +146,12 @@ def get_snowflake_config():
         return {}
 
 
-def log_recommendation_event(recommendation_id, event_type, actor, details):
-    events = st.session_state["recommendation_events_workflow"].copy()
-    next_id = f"EVT-DEMO-{len(events) + 1:03d}"
-    new_event = pd.DataFrame(
-        [
-            {
-                "event_id": next_id,
-                "recommendation_id": recommendation_id,
-                "event_ts": AS_OF_DATE + pd.Timedelta(hours=12, minutes=len(events) % 60),
-                "event_type": event_type,
-                "actor": actor,
-                "details": details,
-            }
-        ]
-    )
-    st.session_state["recommendation_events_workflow"] = pd.concat([events, new_event], ignore_index=True)
-
-
-def update_recommendation_status(recommendation_id, new_status, actor, notes):
-    workflow = st.session_state["recommendations_workflow"].copy()
-    mask = workflow["recommendation_id"] == recommendation_id
-    if not mask.any():
-        return
-
-    now = AS_OF_DATE + pd.Timedelta(hours=12)
-    event_type, default_detail = ACTIONABLE_STATUSES[new_status]
-    workflow.loc[mask, "status"] = new_status
-    workflow.loc[mask, "last_seen_at"] = AS_OF_DATE
-
-    if new_status in {"Accepted", "Implemented", "Realized"} and workflow.loc[mask, "accepted_at"].isna().any():
-        workflow.loc[mask, "accepted_at"] = now
-    if new_status in {"Implemented", "Realized"}:
-        workflow.loc[mask, "implemented_at"] = now
-    if new_status == "Realized":
-        unrealized = workflow.loc[mask, "realized_monthly_savings"].fillna(0) == 0
-        if unrealized.any():
-            workflow.loc[mask, "realized_monthly_savings"] = (
-                workflow.loc[mask, "projected_monthly_savings"] * 0.85
-            ).round(0).astype(int)
-
-    st.session_state["recommendations_workflow"] = workflow
-    details = notes.strip() if notes and notes.strip() else default_detail
-    log_recommendation_event(recommendation_id, event_type, actor, details)
-
-
 data = load_data()
 AS_OF_DATE = pd.Timestamp("2026-05-18")
-if "recommendations_workflow" not in st.session_state:
-    st.session_state["recommendations_workflow"] = data["recommendations"].copy()
-if "recommendation_events_workflow" not in st.session_state:
-    st.session_state["recommendation_events_workflow"] = data["recommendation_events"].copy()
+initialize_session_store(st.session_state, data["recommendations"], data["recommendation_events"])
 
-recommendations = enrich_recommendation_lifecycle(st.session_state["recommendations_workflow"], AS_OF_DATE)
-recommendation_events = st.session_state["recommendation_events_workflow"]
+recommendations = enrich_recommendation_lifecycle(recommendations_frame(st.session_state), AS_OF_DATE)
+recommendation_events = recommendation_events_frame(st.session_state)
 scan_runs = data["scan_runs"]
 warehouses = data["warehouses"]
 data_source_status = "Sample data loaded"
@@ -470,19 +422,14 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
         for col, (label, status) in zip(action_cols, action_labels):
             disabled = rec["status"] == status
             if col.button(label, disabled=disabled, key=f"{selected_recommendation_id}_{status}"):
-                update_recommendation_status(selected_recommendation_id, status, actor, notes)
+                update_recommendation_status(st.session_state, selected_recommendation_id, status, actor, notes, AS_OF_DATE)
                 st.toast(f"{selected_recommendation_id} moved to {status}.")
                 st.rerun()
     with right:
         st.caption("Generated SQL or implementation guidance")
         st.code(rec["generated_sql"], language="sql")
         if st.button("Log SQL copied", key=f"{selected_recommendation_id}_copy_sql"):
-            log_recommendation_event(
-                selected_recommendation_id,
-                "SQL_COPIED",
-                rec["owner"],
-                "Copied generated SQL or implementation guidance from the recommendation detail.",
-            )
+            log_sql_copied(st.session_state, selected_recommendation_id, rec["owner"], AS_OF_DATE + pd.Timedelta(hours=12))
             st.toast("SQL copy event logged.")
             st.rerun()
         st.caption("Lifecycle")
@@ -961,17 +908,40 @@ def settings_page():
                     st.success(f"Connected to {result['account']} in {result['region']} on Snowflake {result['version']}.")
                 except Exception as exc:
                     st.error(f"Connection failed: {exc}")
+        if st.button("Initialize persistence schema"):
+            if not snowflake_config:
+                st.error("No Snowflake secrets found. Add credentials before creating Snowflake objects.")
+            else:
+                try:
+                    initialize_app_schema(snowflake_config)
+                    st.success("Core recommendation, scan, event, and savings objects are ready in Snowflake.")
+                except Exception as exc:
+                    st.error(f"Schema initialization failed: {exc}")
     with right_conn:
         st.caption(
-            "Live mode currently pulls warehouse metering history only. Recommendations, scan history, storage, tasks, "
-            "and savings realization remain in demo data until the scan engine is implemented."
+            "Live mode currently pulls warehouse metering history only. The persistence schema button creates the "
+            "Snowflake tables and workflow procedures that will back recommendation status changes, audit events, "
+            "scan history, and savings snapshots."
         )
+
+    st.subheader("Persistence Layer")
+    persistence_assets = pd.DataFrame(
+        [
+            ("Core tables", "sql/app/001_core_tables.sql", "Recommendation, event, scan, finding, and savings tables"),
+            ("Workflow procedures", "sql/app/002_recommendation_workflow_procedures.sql", "Status updates and SQL-copy audit events"),
+            ("Local adapter", "costops/data/recommendation_store.py", "Session-backed workflow store for POC actions"),
+            ("Snowflake adapter", "costops/data/snowflake_repository.py", "Schema initialization and procedure calls"),
+        ],
+        columns=["Asset", "Path", "Purpose"],
+    )
+    st.dataframe(persistence_assets, use_container_width=True, hide_index=True)
 
     st.subheader("Native App Readiness Checklist")
     readiness = pd.DataFrame(
         [
             ("Application package", "Not started", "manifest.yml and setup_script.sql"),
             ("Privilege model", "Not started", "Document access to account usage metadata"),
+            ("Persistence schema", "POC ready", "Core tables and workflow procedures created under sql/app"),
             ("Scan procedure", "POC only", "Replace sample data with SQL-backed scan"),
             ("Scheduled task", "Not started", "Nightly scan option"),
             ("Marketplace listing", "Not started", "Screenshots, support, security notes"),

@@ -35,6 +35,17 @@ Current demo-only areas:
 - Workload attribution
 - Savings realization
 
+## Persistence Layer
+
+The POC now has a Snowflake-shaped persistence layer for the recommendation lifecycle:
+
+- `sql/app/001_core_tables.sql` creates core tables for recommendations, audit events, scan runs, scan findings, and savings snapshots.
+- `sql/app/002_recommendation_workflow_procedures.sql` creates stored procedures for recommendation status changes and SQL-copy audit events.
+- `costops/data/recommendation_store.py` is the local session-backed workflow adapter used by the Streamlit demo.
+- `costops/data/snowflake_repository.py` initializes the Snowflake schema and calls the workflow procedures.
+
+In demo mode, recommendation workflow actions are written to `runtime_state/`, which is ignored by Git so demo usage does not change the seed sample data. In Snowflake mode, the Settings page includes an **Initialize persistence schema** action that creates the table and procedure targets for the future live workflow.
+
 ## Current POC Scope
 
 - Executive cost overview
@@ -54,12 +65,17 @@ Current demo-only areas:
 app/
   streamlit_app.py          # Local POC UI
 costops/
+  data/recommendation_store.py  # Session-backed recommendation workflow adapter
   data/sample_loader.py     # Sample-data loader
+  data/snowflake_repository.py # Snowflake persistence helpers
   data/snowflake_loader.py  # Optional Snowflake metadata loader
   rules/rule_catalog.py     # First deterministic rule backlog
   services/metrics.py       # Shared metric helpers
 sample_data/                # CSV data used by the local POC
-sql/                        # Placeholder for future Snowflake SQL assets
+runtime_state/              # Local ignored workflow state created at runtime
+sql/
+  app/                       # Core app tables and workflow procedures
+  diagnostics/               # Account usage diagnostic queries
 ```
 
 ## Recommendation Lifecycle
