@@ -1226,7 +1226,6 @@ def build_pdf_report(
         Spacer(1, 8),
         Paragraph("Executive ROI Summary", styles["Heading2"]),
         pdf_table(summary_rows, limit=30, max_cols=2),
-        PageBreak(),
     ]
 
     sections = []
@@ -1241,6 +1240,9 @@ def build_pdf_report(
     if "Scan ROI history" in selected_sections:
         sections.append(("Scan ROI History", scan_report.sort_values("started_at", ascending=False)))
 
+    if sections:
+        story.append(PageBreak())
+
     for title, frame in sections:
         story.extend(
             [
@@ -1250,9 +1252,13 @@ def build_pdf_report(
             ]
         )
 
+    if sections:
+        story.append(PageBreak())
+    else:
+        story.append(Spacer(1, 12))
+
     story.extend(
         [
-            PageBreak(),
             Paragraph("Recommendation Backlog Detail", styles["Heading2"]),
             pdf_table(backlog_export, money_columns, limit=limits["backlog"]),
             Spacer(1, 10),
