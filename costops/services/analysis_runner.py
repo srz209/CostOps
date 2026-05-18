@@ -16,6 +16,26 @@ class AnalysisConfig:
     scan_scope: str = "Full"
     initiated_by: str = "system"
     source_mode: str = "Sample data"
+    min_confidence: float = 0.70
+    min_monthly_savings: float = 500.0
+    warehouse_monthly_cost_floor: float = 750.0
+    warehouse_utilization_ceiling: float = 25.0
+    warehouse_queue_seconds_ceiling: float = 120.0
+    warehouse_downsize_savings_pct: float = 0.40
+    auto_suspend_resume_threshold: float = 35.0
+    auto_suspend_savings_pct: float = 0.18
+    workload_scan_gb_threshold: float = 2000.0
+    workload_runtime_seconds_threshold: float = 300.0
+    spill_gb_threshold: float = 3.0
+    full_refresh_savings_pct: float = 0.55
+    spill_savings_pct: float = 0.25
+    task_executions_7d_threshold: float = 300.0
+    task_failures_7d_threshold: float = 5.0
+    task_schedule_savings_pct: float = 0.45
+    task_failure_savings_pct: float = 0.20
+    stale_object_days: float = 90.0
+    stale_object_access_threshold: float = 0.0
+    dev_clone_savings_pct: float = 0.40
 
 
 def run_environment_analysis(warehouses, workloads, storage, tasks, config=None, as_of_ts=None):
@@ -25,16 +45,23 @@ def run_environment_analysis(warehouses, workloads, storage, tasks, config=None,
 
     recommendations = pd.concat(
         [
-            warehouse_recommendations(warehouses, scan_id, as_of_ts),
-            workload_recommendations(workloads, scan_id, as_of_ts),
-            task_recommendations(tasks, scan_id, as_of_ts),
-            storage_recommendations(storage, scan_id, as_of_ts),
+            warehouse_recommendations(warehouses, scan_id, as_of_ts, config),
+            workload_recommendations(workloads, scan_id, as_of_ts, config),
+            task_recommendations(tasks, scan_id, as_of_ts, config),
+            storage_recommendations(storage, scan_id, as_of_ts, config),
         ],
         ignore_index=True,
     )
 
     if recommendations.empty:
         recommendations = empty_recommendations()
+    else:
+        recommendations = recommendations[
+            (recommendations["confidence"] >= config.min_confidence)
+            & (recommendations["projected_monthly_savings"] >= config.min_monthly_savings)
+        ].reset_index(drop=True)
+        if recommendations.empty:
+            recommendations = empty_recommendations()
 
     findings = build_findings(scan_id, recommendations)
     credits_estimated = estimate_scan_credits(warehouses, workloads, storage, tasks)
@@ -142,7 +169,7 @@ def stable_recommendation_id(rule_id, object_name):
     return f"{rule_id}-{digest}"
 
 
-def warehouse_recommendations(warehouses, scan_id, as_of_ts):
+def warehouse_recommendations(warehouses, scan_id, as_of_ts, config):
     if warehouses is None or warehouses.empty:
         return empty_recommendations()
 
@@ -165,7 +192,11 @@ def warehouse_recommendations(warehouses, scan_id, as_of_ts):
     for item in grouped.itertuples(index=False):
         warehouse = str(item.warehouse)
         projected_monthly = item.monthly_cost * (30 / max(item.days_observed, 1))
-        if projected_monthly >= 750 and item.avg_utilization < 25 and item.queued_seconds < 120:
+        if (
+            projected_monthly >= config.warehouse_monthly_cost_floor
+            and item.avg_utilization < config.warehouse_utilization_ceiling
+            and item.queued_seconds < config.warehouse_queue_seconds_ceiling
+        ):
             rows.append(
                 recommendation_row(
                     "WH_OVERSIZED",
@@ -176,7 +207,7 @@ def warehouse_recommendations(warehouses, scan_id, as_of_ts):
                     warehouse,
                     "High" if projected_monthly >= 2500 else "Medium",
                     0.84 if item.avg_utilization < 20 else 0.76,
-                    projected_monthly * 0.4,
+                    projected_monthly * config.warehouse_downsize_savings_pct,
                     "Medium",
                     "Medium",
                     f"-- Review query concurrency, then test a one-size reduction for {warehouse}.",
@@ -189,7 +220,7 @@ def warehouse_recommendations(warehouses, scan_id, as_of_ts):
                     team="Data Platform",
                 )
             )
-        if item.avg_resumes >= 35:
+        if item.avg_resumes >= config.auto_suspend_resume_threshold:
             rows.append(
                 recommendation_row(
                     "WH_AUTO_SUSPEND_HIGH",
@@ -200,7 +231,7 @@ def warehouse_recommendations(warehouses, scan_id, as_of_ts):
                     warehouse,
                     "Medium",
                     0.72,
-                    projected_monthly * 0.18,
+                    projected_monthly * config.auto_suspend_savings_pct,
                     "Low",
                     "Low",
                     f"ALTER WAREHOUSE {warehouse} SET AUTO_SUSPEND = 60;",
@@ -214,7 +245,7 @@ def warehouse_recommendations(warehouses, scan_id, as_of_ts):
     return pd.DataFrame(rows) if rows else empty_recommendations()
 
 
-def workload_recommendations(workloads, scan_id, as_of_ts):
+def workload_recommendations(workloads, scan_id, as_of_ts, config):
     if workloads is None or workloads.empty:
         return empty_recommendations()
 
@@ -225,7 +256,10 @@ def workload_recommendations(workloads, scan_id, as_of_ts):
     rows = []
     for item in df.itertuples(index=False):
         workload = str(item.workload)
-        if item.gb_scanned >= 2000 and item.avg_runtime_seconds >= 300:
+        if (
+            item.gb_scanned >= config.workload_scan_gb_threshold
+            and item.avg_runtime_seconds >= config.workload_runtime_seconds_threshold
+        ):
             rows.append(
                 recommendation_row(
                     "PIPELINE_FULL_REFRESH",
@@ -236,7 +270,7 @@ def workload_recommendations(workloads, scan_id, as_of_ts):
                     workload,
                     "Critical" if item.cost_usd >= 5000 else "High",
                     0.82,
-                    item.cost_usd * 0.55,
+                    item.cost_usd * config.full_refresh_savings_pct,
                     "Medium",
                     "High",
                     "-- Review model logic and add incremental predicates before the nightly rebuild.",
@@ -249,7 +283,7 @@ def workload_recommendations(workloads, scan_id, as_of_ts):
                     team="Analytics Engineering",
                 )
             )
-        if item.spill_gb >= 3:
+        if item.spill_gb >= config.spill_gb_threshold:
             rows.append(
                 recommendation_row(
                     "QUERY_SPILLAGE",
@@ -260,7 +294,7 @@ def workload_recommendations(workloads, scan_id, as_of_ts):
                     workload,
                     "High",
                     0.74,
-                    item.cost_usd * 0.25,
+                    item.cost_usd * config.spill_savings_pct,
                     "Medium",
                     "Medium",
                     "-- Inspect query profile for spilled joins, large sorts, and missing filters.",
@@ -274,7 +308,7 @@ def workload_recommendations(workloads, scan_id, as_of_ts):
     return pd.DataFrame(rows) if rows else empty_recommendations()
 
 
-def task_recommendations(tasks, scan_id, as_of_ts):
+def task_recommendations(tasks, scan_id, as_of_ts, config):
     if tasks is None or tasks.empty:
         return empty_recommendations()
 
@@ -285,7 +319,7 @@ def task_recommendations(tasks, scan_id, as_of_ts):
     rows = []
     for item in df.itertuples(index=False):
         task_name = str(item.task_name)
-        if item.executions_7d >= 300:
+        if item.executions_7d >= config.task_executions_7d_threshold:
             rows.append(
                 recommendation_row(
                     "TASK_FREQUENCY_HIGH",
@@ -296,7 +330,7 @@ def task_recommendations(tasks, scan_id, as_of_ts):
                     task_name,
                     "High" if item.estimated_compute_cost >= 900 else "Medium",
                     0.8,
-                    item.estimated_compute_cost * 0.45,
+                    item.estimated_compute_cost * config.task_schedule_savings_pct,
                     "Low",
                     "Low",
                     f"-- Review downstream freshness needs, then reduce the schedule for {task_name}.",
@@ -309,7 +343,7 @@ def task_recommendations(tasks, scan_id, as_of_ts):
                     team="Business Intelligence",
                 )
             )
-        if item.failures_7d >= 5:
+        if item.failures_7d >= config.task_failures_7d_threshold:
             rows.append(
                 recommendation_row(
                     "TASK_FAILURE_CHURN",
@@ -320,7 +354,7 @@ def task_recommendations(tasks, scan_id, as_of_ts):
                     task_name,
                     "Medium",
                     0.7,
-                    item.estimated_compute_cost * 0.2,
+                    item.estimated_compute_cost * config.task_failure_savings_pct,
                     "Low",
                     "Medium",
                     f"-- Suspend {task_name} until owner validates failure cause.",
@@ -334,7 +368,7 @@ def task_recommendations(tasks, scan_id, as_of_ts):
     return pd.DataFrame(rows) if rows else empty_recommendations()
 
 
-def storage_recommendations(storage, scan_id, as_of_ts):
+def storage_recommendations(storage, scan_id, as_of_ts, config):
     if storage is None or storage.empty:
         return empty_recommendations()
 
@@ -345,7 +379,7 @@ def storage_recommendations(storage, scan_id, as_of_ts):
     rows = []
     for item in df.itertuples(index=False):
         object_name = str(item.object_name)
-        if item.last_queried_days >= 90 and item.access_count_30d == 0:
+        if item.last_queried_days >= config.stale_object_days and item.access_count_30d <= config.stale_object_access_threshold:
             rows.append(
                 recommendation_row(
                     "STORAGE_STALE_OBJECT",
@@ -377,7 +411,7 @@ def storage_recommendations(storage, scan_id, as_of_ts):
                     object_name,
                     "Low",
                     0.68,
-                    item.monthly_storage_cost * 0.4,
+                    item.monthly_storage_cost * config.dev_clone_savings_pct,
                     "Low",
                     "Low",
                     f"-- Replace independent dev refreshes with zero-copy clone lifecycle for {object_name}.",

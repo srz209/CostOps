@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from costops.data.app_settings_store import due_days_by_severity
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_STATE_DIR = ROOT / "runtime_state"
@@ -29,8 +30,6 @@ DEFAULT_ROLE_BY_TEAM = {
     "Business Intelligence": "BI Lead",
     "Data Governance": "Governance Lead",
 }
-DEFAULT_DUE_DAYS = {"Critical": 7, "High": 14, "Medium": 30, "Low": 45}
-
 ACTIONABLE_STATUSES = {
     "Selected": ("SELECTED", "Selected for active review."),
     "Accepted": ("ACCEPTED", "Accepted for implementation planning."),
@@ -260,7 +259,8 @@ def ensure_recommendation_columns(recommendations):
 
 def default_due_date(row):
     base = pd.Timestamp(row["first_seen_at"]).normalize()
-    return base + pd.Timedelta(days=DEFAULT_DUE_DAYS.get(row.get("severity"), 30))
+    severity_days = due_days_by_severity()
+    return base + pd.Timedelta(days=severity_days.get(row.get("severity"), 30))
 
 
 def same_day(current_value, new_value):

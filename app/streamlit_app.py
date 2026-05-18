@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from costops.data.app_settings_store import current_app_settings, initialize_app_settings, persist_app_settings
 from costops.data.sample_loader import load_sample_data
 from costops.data.recommendation_store import (
     initialize_session_store,
@@ -242,6 +243,7 @@ def has_permission(permission):
 
 data = load_data()
 AS_OF_DATE = pd.Timestamp("2026-05-18")
+initialize_app_settings(st.session_state)
 initialize_session_store(st.session_state, data["recommendations"], data["recommendation_events"], data["scan_runs"])
 
 recommendations = enrich_recommendation_lifecycle(recommendations_frame(st.session_state), AS_OF_DATE)
@@ -265,7 +267,7 @@ role_options = ["All"] + sorted(recommendations["role"].unique().tolist())
 def scan_schedule_page():
     st.title("Scan & Schedule")
     st.caption("Schedule, run, and review Snowflake environment analysis runs. POC mode uses demo history.")
-    scan_control_page_section(DEFAULT_CREDIT_PRICE)
+    scan_control_page_section(current_app_settings(st.session_state)["credit_price"])
 
 
 def apply_recommendation_filters(df, status="All", category="All", owner="All", team="All", min_confidence=0.65):
@@ -282,6 +284,7 @@ def apply_recommendation_filters(df, status="All", category="All", owner="All", 
 
 
 def render_recommendation_filter_bar(key_prefix="global", include_severity=False, include_daily_sort=False):
+    settings = current_app_settings(st.session_state)
     filters = {}
     columns = [1, 1, 1.1, 1.1, 1]
     if include_severity:
@@ -309,7 +312,12 @@ def render_recommendation_filter_bar(key_prefix="global", include_severity=False
     idx += 1
     with filter_cols[idx]:
         filters["min_confidence"] = st.slider(
-            "Min confidence", 0.0, 1.0, 0.65, 0.05, key=f"{key_prefix}_min_confidence"
+            "Min confidence",
+            0.0,
+            1.0,
+            float(settings["min_confidence"]),
+            0.05,
+            key=f"{key_prefix}_min_confidence",
         )
     if include_daily_sort:
         idx += 1
@@ -1644,6 +1652,7 @@ def build_finance_packet_html(
 
 
 def reports_page():
+    settings = current_app_settings(st.session_state)
     st.title("Reports")
     top_cols = st.columns([1.35, 0.95, 1, 1, 1, 1])
     with top_cols[0]:
@@ -1694,7 +1703,7 @@ def reports_page():
     recommendations_open = int(page_recs["is_open"].sum())
     recommendations_realized = int((page_recs["status"] == "Realized").sum())
     latest_scan = latest_successful_scan(scan_runs)
-    scan_cost = latest_scan["credits_estimated"] * DEFAULT_CREDIT_PRICE if latest_scan is not None else 0
+    scan_cost = latest_scan["credits_estimated"] * float(settings["credit_price"]) if latest_scan is not None else 0
     scan_roi = monthly_opportunity / scan_cost if scan_cost else 0
     net_monthly_benefit = monthly_opportunity - scan_cost
 
@@ -1745,7 +1754,7 @@ def reports_page():
         avg_days_open=("days_lingering", "mean"),
     )
     scan_report = scan_runs.copy()
-    scan_report["scan_cost_usd"] = scan_report["credits_estimated"] * DEFAULT_CREDIT_PRICE
+    scan_report["scan_cost_usd"] = scan_report["credits_estimated"] * float(settings["credit_price"])
     scan_report["identified_monthly_savings"] = monthly_opportunity
     scan_report["savings_per_scan_dollar"] = scan_report["identified_monthly_savings"] / scan_report["scan_cost_usd"]
     scan_report.loc[scan_report["scan_cost_usd"] == 0, "savings_per_scan_dollar"] = 0
@@ -2128,6 +2137,7 @@ def reports_page():
 
 
 def scan_control_page_section(credit_price):
+    settings = current_app_settings(st.session_state)
     latest_scan = latest_successful_scan(scan_runs)
     freshness = scan_freshness(scan_runs, AS_OF_DATE + pd.Timedelta(hours=12), stale_after_hours=24)
 
@@ -2152,7 +2162,10 @@ def scan_control_page_section(credit_price):
         preferred_time = st.time_input("Preferred scan time", value=pd.Timestamp("2026-05-18 08:00").time())
     with center:
         scan_scope = st.selectbox("Scan scope", ["Full", "Incremental"], index=0)
-        lookback_window = st.selectbox("Lookback window", ["7 days", "30 days", "90 days", "All available"], index=1)
+        lookback_map = [7, 30, 90, 365]
+        lookback_labels = ["7 days", "30 days", "90 days", "All available"]
+        lookback_index = lookback_map.index(int(settings["lookback_days"])) if int(settings["lookback_days"]) in lookback_map else 1
+        lookback_window = st.selectbox("Lookback window", lookback_labels, index=lookback_index)
     with right:
         st.selectbox("Next scheduled scan", ["2026-05-19 08:00", "2026-05-20 08:00", "Manual only"], index=0)
         run_now = st.button("Run analysis now", type="primary", disabled=not has_permission("operate"))
@@ -2191,11 +2204,31 @@ def scan_control_page_section(credit_price):
             analysis_inputs["storage"],
             analysis_inputs["tasks"],
             AnalysisConfig(
-                credit_price=credit_price,
+                credit_price=float(settings["credit_price"]),
                 lookback_days=lookback_days,
                 scan_scope=scan_scope,
                 initiated_by=actor,
                 source_mode=data_source_mode,
+                min_confidence=float(settings["min_confidence"]),
+                min_monthly_savings=float(settings["min_monthly_savings"]),
+                warehouse_monthly_cost_floor=float(settings["warehouse_monthly_cost_floor"]),
+                warehouse_utilization_ceiling=float(settings["warehouse_utilization_ceiling"]),
+                warehouse_queue_seconds_ceiling=float(settings["warehouse_queue_seconds_ceiling"]),
+                warehouse_downsize_savings_pct=float(settings["warehouse_downsize_savings_pct"]),
+                auto_suspend_resume_threshold=float(settings["auto_suspend_resume_threshold"]),
+                auto_suspend_savings_pct=float(settings["auto_suspend_savings_pct"]),
+                workload_scan_gb_threshold=float(settings["workload_scan_gb_threshold"]),
+                workload_runtime_seconds_threshold=float(settings["workload_runtime_seconds_threshold"]),
+                spill_gb_threshold=float(settings["spill_gb_threshold"]),
+                full_refresh_savings_pct=float(settings["full_refresh_savings_pct"]),
+                spill_savings_pct=float(settings["spill_savings_pct"]),
+                task_executions_7d_threshold=float(settings["task_executions_7d_threshold"]),
+                task_failures_7d_threshold=float(settings["task_failures_7d_threshold"]),
+                task_schedule_savings_pct=float(settings["task_schedule_savings_pct"]),
+                task_failure_savings_pct=float(settings["task_failure_savings_pct"]),
+                stale_object_days=float(settings["stale_object_days"]),
+                stale_object_access_threshold=float(settings["stale_object_access_threshold"]),
+                dev_clone_savings_pct=float(settings["dev_clone_savings_pct"]),
             ),
             as_of_ts=run_ts,
         )
@@ -2249,6 +2282,7 @@ def scan_control_page_section(credit_price):
 
 
 def settings_page():
+    settings = current_app_settings(st.session_state)
     st.title("Settings")
     st.caption("POC controls for scan configuration, thresholds, and Snowflake Marketplace packaging assumptions.")
     if not has_permission("admin"):
@@ -2257,19 +2291,65 @@ def settings_page():
     left, center, right = st.columns(3)
     with left:
         st.subheader("Cost Model")
-        credit_price = st.number_input("Credit price USD", min_value=0.0, value=3.0, step=0.25)
-        lookback_days = st.slider("Default lookback days", 7, 90, 30, 1)
-        annualization_months = st.slider("Annualization months", 1, 12, 12, 1)
+        credit_price = st.number_input("Credit price USD", min_value=0.0, value=float(settings["credit_price"]), step=0.25)
+        lookback_days = st.select_slider("Default lookback days", options=[7, 30, 90, 365], value=int(settings["lookback_days"]), format_func=lambda value: "All available" if value == 365 else f"{value} days")
+        annualization_months = st.slider("Annualization months", 1, 12, int(settings["annualization_months"]), 1)
+        min_monthly_savings = st.number_input("Minimum monthly savings", min_value=0.0, value=float(settings["min_monthly_savings"]), step=100.0)
+        min_confidence_setting = st.slider("Default recommendation confidence", 0.0, 1.0, float(settings["min_confidence"]), 0.05)
     with center:
         st.subheader("Rule Thresholds")
-        auto_suspend_target = st.number_input("Auto-suspend target seconds", min_value=30, value=60, step=30)
-        stale_days = st.number_input("Stale object threshold days", min_value=30, value=90, step=15)
-        min_confidence_setting = st.slider("Default recommendation confidence", 0.0, 1.0, 0.70, 0.05)
+        warehouse_utilization_ceiling = st.number_input("Warehouse utilization ceiling %", min_value=1.0, max_value=100.0, value=float(settings["warehouse_utilization_ceiling"]), step=1.0)
+        warehouse_monthly_cost_floor = st.number_input("Warehouse monthly cost floor", min_value=0.0, value=float(settings["warehouse_monthly_cost_floor"]), step=100.0)
+        auto_suspend_resume_threshold = st.number_input("Warehouse resume threshold", min_value=1.0, value=float(settings["auto_suspend_resume_threshold"]), step=1.0)
+        task_executions_threshold = st.number_input("Task executions threshold (7d)", min_value=1.0, value=float(settings["task_executions_7d_threshold"]), step=10.0)
+        task_failures_threshold = st.number_input("Task failures threshold (7d)", min_value=0.0, value=float(settings["task_failures_7d_threshold"]), step=1.0)
     with right:
-        st.subheader("Execution Mode")
+        st.subheader("Data Thresholds")
+        stale_days = st.number_input("Stale object threshold days", min_value=1.0, value=float(settings["stale_object_days"]), step=15.0)
+        workload_scan_gb_threshold = st.number_input("Full refresh scan threshold GB", min_value=0.0, value=float(settings["workload_scan_gb_threshold"]), step=100.0)
+        workload_runtime_threshold = st.number_input("Full refresh runtime threshold sec", min_value=0.0, value=float(settings["workload_runtime_seconds_threshold"]), step=30.0)
+        spill_gb_threshold = st.number_input("Spill threshold GB", min_value=0.0, value=float(settings["spill_gb_threshold"]), step=0.5)
+        due_days_critical = st.number_input("Due days critical", min_value=1, value=int(settings["due_days_critical"]), step=1)
+        due_days_high = st.number_input("Due days high", min_value=1, value=int(settings["due_days_high"]), step=1)
+        due_days_medium = st.number_input("Due days medium", min_value=1, value=int(settings["due_days_medium"]), step=1)
+        due_days_low = st.number_input("Due days low", min_value=1, value=int(settings["due_days_low"]), step=1)
+
+    exec_cols = st.columns(3)
+    with exec_cols[0]:
         st.toggle("Read-only recommendations", value=True, disabled=not has_permission("admin"))
+    with exec_cols[1]:
         st.toggle("Generate implementation SQL", value=True, disabled=not has_permission("admin"))
+    with exec_cols[2]:
         st.toggle("Allow approved SQL execution", value=False, disabled=not has_permission("admin"))
+
+    if has_permission("admin"):
+        if st.button("Save threshold settings", type="primary"):
+            app_settings = persist_app_settings(
+                st.session_state,
+                {
+                    "credit_price": credit_price,
+                    "lookback_days": lookback_days,
+                    "annualization_months": annualization_months,
+                    "min_monthly_savings": min_monthly_savings,
+                    "min_confidence": min_confidence_setting,
+                    "warehouse_utilization_ceiling": warehouse_utilization_ceiling,
+                    "warehouse_monthly_cost_floor": warehouse_monthly_cost_floor,
+                    "auto_suspend_resume_threshold": auto_suspend_resume_threshold,
+                    "task_executions_7d_threshold": task_executions_threshold,
+                    "task_failures_7d_threshold": task_failures_threshold,
+                    "stale_object_days": stale_days,
+                    "workload_scan_gb_threshold": workload_scan_gb_threshold,
+                    "workload_runtime_seconds_threshold": workload_runtime_threshold,
+                    "spill_gb_threshold": spill_gb_threshold,
+                    "due_days_critical": due_days_critical,
+                    "due_days_high": due_days_high,
+                    "due_days_medium": due_days_medium,
+                    "due_days_low": due_days_low,
+                },
+            )
+            st.success("Threshold settings saved. New scans and default filters will use these values.")
+    else:
+        app_settings = settings
 
     st.subheader("Snowflake Connection")
     config_rows = []
@@ -2372,12 +2452,14 @@ def settings_page():
 
     st.subheader("Current POC Assumptions")
     assumptions = {
-        "Credit price": money(credit_price),
+        "Credit price": money(app_settings["credit_price"]),
         "Lookback window": f"{lookback_days} days",
-        "Annualization period": f"{annualization_months} months",
-        "Auto-suspend target": f"{auto_suspend_target} seconds",
-        "Stale object threshold": f"{stale_days} days",
-        "Default confidence": f"{min_confidence_setting:.0%}",
+        "Minimum monthly savings": money(app_settings["min_monthly_savings"]),
+        "Annualization period": f"{app_settings['annualization_months']} months",
+        "Warehouse utilization ceiling": f"{app_settings['warehouse_utilization_ceiling']:.0f}%",
+        "Task executions threshold": f"{app_settings['task_executions_7d_threshold']:.0f} per 7d",
+        "Stale object threshold": f"{app_settings['stale_object_days']:.0f} days",
+        "Default confidence": f"{app_settings['min_confidence']:.0%}",
     }
     st.json(assumptions)
 
@@ -2408,6 +2490,7 @@ current_page = st.navigation(navigation_pages, position="sidebar", expanded=True
 
 with st.sidebar:
     st.title("Cost Optimization")
+    sidebar_settings = current_app_settings(st.session_state)
     st.session_state["current_access_role"] = st.selectbox(
         "Access role",
         ACCESS_ROLES,
@@ -2418,7 +2501,11 @@ with st.sidebar:
     if data_source_mode == "Snowflake":
         if snowflake_config:
             try:
-                warehouses = load_live_warehouse_metering(snowflake_config, lookback_days=30, credit_price=DEFAULT_CREDIT_PRICE)
+                warehouses = load_live_warehouse_metering(
+                    snowflake_config,
+                    lookback_days=int(sidebar_settings["lookback_days"]),
+                    credit_price=float(sidebar_settings["credit_price"]),
+                )
                 data_source_status = "Snowflake warehouse metering loaded"
             except Exception as exc:
                 data_source_status = f"Snowflake load failed; using sample data. {exc}"
