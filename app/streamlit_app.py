@@ -1512,7 +1512,7 @@ def reports_page():
             help="Controls how many recommendation and audit rows are included in the downloaded report.",
         )
     with config_cols[1]:
-        download_format = st.segmented_control("Download format", ["PDF", "Excel", "HTML"], default="PDF")
+        download_format = st.radio("Download format", ["PDF", "Excel", "HTML"], horizontal=True, index=0)
     page_recs = apply_recommendation_filters(
         recommendations,
         status=status,
