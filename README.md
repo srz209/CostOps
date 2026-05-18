@@ -12,6 +12,29 @@ pip install -r requirements.txt
 streamlit run app/streamlit_app.py
 ```
 
+## Optional Snowflake Mode
+
+The app runs in demo mode by default. To test live Snowflake warehouse metering:
+
+```bash
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+```
+
+Then fill in the Snowflake connection values in `.streamlit/secrets.toml` and restart Streamlit. Use the sidebar **Data source** control to switch from **Sample data** to **Snowflake**.
+
+Current live coverage:
+
+- Warehouse metering history from `SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY`
+
+Current demo-only areas:
+
+- Recommendations
+- Scan history
+- Storage
+- Tasks
+- Workload attribution
+- Savings realization
+
 ## Current POC Scope
 
 - Executive cost overview
@@ -32,6 +55,7 @@ app/
   streamlit_app.py          # Local POC UI
 costops/
   data/sample_loader.py     # Sample-data loader
+  data/snowflake_loader.py  # Optional Snowflake metadata loader
   rules/rule_catalog.py     # First deterministic rule backlog
   services/metrics.py       # Shared metric helpers
 sample_data/                # CSV data used by the local POC

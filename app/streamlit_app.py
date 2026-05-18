@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from costops.data.sample_loader import load_sample_data
+from costops.data.snowflake_loader import load_warehouse_metering_history, test_connection
 from costops.rules.rule_catalog import RULE_CATALOG
 from costops.services.metrics import (
     enrich_recommendation_lifecycle,
@@ -71,6 +72,47 @@ st.markdown(
         color: #4b5563;
         margin-bottom: 0.3rem;
     }
+    .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.65rem;
+        margin: 0.35rem 0 0.8rem 0;
+    }
+    .kpi-card {
+        border: 1px solid #d7e3f4;
+        border-left: 5px solid #2e74b5;
+        border-radius: 8px;
+        padding: 0.55rem 0.7rem;
+        background: #f7fbff;
+        min-height: 4.2rem;
+    }
+    .kpi-card.savings {
+        border-left-color: #1f8a5b;
+        background: #f3fbf7;
+    }
+    .kpi-card.realized {
+        border-left-color: #7a5af8;
+        background: #f8f6ff;
+    }
+    .kpi-card.critical {
+        border-left-color: #c2410c;
+        background: #fff7ed;
+    }
+    .kpi-label {
+        font-size: 0.72rem;
+        color: #475569;
+        line-height: 1rem;
+    }
+    .kpi-value {
+        font-size: 1.35rem;
+        font-weight: 700;
+        color: #0f172a;
+        line-height: 1.7rem;
+    }
+    .kpi-note {
+        font-size: 0.72rem;
+        color: #64748b;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -84,12 +126,27 @@ def load_data():
     return load_sample_data()
 
 
+@st.cache_data(ttl=900)
+def load_live_warehouse_metering(config, lookback_days, credit_price):
+    return load_warehouse_metering_history(config, lookback_days=lookback_days, credit_price=credit_price)
+
+
+def get_snowflake_config():
+    try:
+        return dict(st.secrets.get("snowflake", {}))
+    except Exception:
+        return {}
+
+
 data = load_data()
 AS_OF_DATE = pd.Timestamp("2026-05-18")
 recommendations = enrich_recommendation_lifecycle(data["recommendations"], AS_OF_DATE)
 recommendation_events = data["recommendation_events"]
 scan_runs = data["scan_runs"]
 warehouses = data["warehouses"]
+data_source_status = "Sample data loaded"
+data_source_mode = "Sample data"
+snowflake_config = get_snowflake_config()
 workloads = data["workloads"]
 storage = data["storage"]
 tasks = data["tasks"]
@@ -102,6 +159,19 @@ team_options = ["All"] + sorted(recommendations["team"].unique().tolist())
 
 with st.sidebar:
     st.title("Cost Optimization")
+    data_source_mode = st.selectbox("Data source", ["Sample data", "Snowflake"], index=0)
+    if data_source_mode == "Snowflake":
+        if snowflake_config:
+            try:
+                warehouses = load_live_warehouse_metering(snowflake_config, lookback_days=30, credit_price=DEFAULT_CREDIT_PRICE)
+                data_source_status = "Snowflake warehouse metering loaded"
+            except Exception as exc:
+                data_source_status = f"Snowflake load failed; using sample data. {exc}"
+                warehouses = data["warehouses"]
+        else:
+            data_source_status = "Snowflake secrets missing; using sample data"
+            warehouses = data["warehouses"]
+
     page = st.radio(
         "Navigation",
         [
@@ -118,37 +188,94 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     st.divider()
-    status_filter = st.selectbox("Status", status_options)
-    category_filter = st.selectbox("Category", category_options)
-    owner_filter = st.selectbox("Owner", owner_options)
-    team_filter = st.selectbox("Team", team_options)
-    min_confidence = st.slider("Minimum confidence", 0.0, 1.0, 0.65, 0.05)
-    st.divider()
-    st.caption("POC data mode")
-    st.status("Sample data loaded", state="complete", expanded=False)
+    st.caption("Data source status")
+    state = "complete" if data_source_status in {"Sample data loaded", "Snowflake warehouse metering loaded"} else "error"
+    st.status(data_source_status, state=state, expanded=False)
 
 
-filtered_recs = recommendations.copy()
-if status_filter != "All":
-    filtered_recs = filtered_recs[filtered_recs["status"] == status_filter]
-if category_filter != "All":
-    filtered_recs = filtered_recs[filtered_recs["category"] == category_filter]
-if owner_filter != "All":
-    filtered_recs = filtered_recs[filtered_recs["owner"] == owner_filter]
-if team_filter != "All":
-    filtered_recs = filtered_recs[filtered_recs["team"] == team_filter]
-filtered_recs = filtered_recs[filtered_recs["confidence"] >= min_confidence]
+def apply_recommendation_filters(df, status="All", category="All", owner="All", team="All", min_confidence=0.65):
+    filtered = df.copy()
+    if status != "All":
+        filtered = filtered[filtered["status"] == status]
+    if category != "All":
+        filtered = filtered[filtered["category"] == category]
+    if owner != "All":
+        filtered = filtered[filtered["owner"] == owner]
+    if team != "All":
+        filtered = filtered[filtered["team"] == team]
+    return filtered[filtered["confidence"] >= min_confidence]
 
 
-def render_kpis():
+def render_recommendation_filter_bar(key_prefix="global", include_severity=False, include_daily_sort=False):
+    filters = {}
+    columns = [1, 1, 1.1, 1.1, 1]
+    if include_severity:
+        columns = [0.95] + columns
+    if include_daily_sort:
+        columns = columns + [1]
+
+    filter_cols = st.columns(columns)
+    idx = 0
+    if include_severity:
+        with filter_cols[idx]:
+            filters["severity"] = st.selectbox("Severity", ["All"] + severity_order, key=f"{key_prefix}_severity")
+        idx += 1
+    with filter_cols[idx]:
+        filters["status"] = st.selectbox("Status", status_options, key=f"{key_prefix}_status")
+    idx += 1
+    with filter_cols[idx]:
+        filters["category"] = st.selectbox("Category", category_options, key=f"{key_prefix}_category")
+    idx += 1
+    with filter_cols[idx]:
+        filters["team"] = st.selectbox("Team", team_options, key=f"{key_prefix}_team")
+    idx += 1
+    with filter_cols[idx]:
+        filters["owner"] = st.selectbox("Owner", owner_options, key=f"{key_prefix}_owner")
+    idx += 1
+    with filter_cols[idx]:
+        filters["min_confidence"] = st.slider(
+            "Min confidence", 0.0, 1.0, 0.65, 0.05, key=f"{key_prefix}_min_confidence"
+        )
+    if include_daily_sort:
+        idx += 1
+        with filter_cols[idx]:
+            filters["daily_savings_sort"] = st.selectbox(
+                "Daily savings", ["High to low", "Low to high"], key=f"{key_prefix}_daily_savings"
+            )
+    return filters
+
+
+def render_kpis(recs=None):
+    recs = recommendations if recs is None else recs
     total_spend = projected_monthly_warehouse_spend(warehouses)
-    summary = recommendation_summary(recommendations)
-
-    cols = st.columns(4)
-    cols[0].metric("Estimated Monthly Spend", money(total_spend), "sample-data projection")
-    cols[1].metric("Monthly Savings Opportunity", money(summary["monthly_savings"]), "open recommendations")
-    cols[2].metric("Realized Monthly Savings", money(summary["realized_monthly_savings"]), "validated")
-    cols[3].metric("Critical Findings", f"{summary['critical_count']}", "highest priority")
+    summary = recommendation_summary(recs)
+    st.markdown(
+        f"""
+        <div class="kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-label">Estimated Monthly Spend</div>
+                <div class="kpi-value">{money(total_spend)}</div>
+                <div class="kpi-note">current projection</div>
+            </div>
+            <div class="kpi-card savings">
+                <div class="kpi-label">Monthly Savings Opportunity</div>
+                <div class="kpi-value">{money(summary["monthly_savings"])}</div>
+                <div class="kpi-note">open recommendations</div>
+            </div>
+            <div class="kpi-card realized">
+                <div class="kpi-label">Realized Monthly Savings</div>
+                <div class="kpi-value">{money(summary["realized_monthly_savings"])}</div>
+                <div class="kpi-note">validated savings</div>
+            </div>
+            <div class="kpi-card critical">
+                <div class="kpi-label">Critical Findings</div>
+                <div class="kpi-value">{summary["critical_count"]}</div>
+                <div class="kpi-note">highest priority</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def recommendation_table(df, key="recommendation_table", selectable=False, height=None, sort_by=None, ascending=False):
@@ -280,13 +407,22 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
 
 def overview():
     st.title("Snowflake Cost Optimization POC")
-    render_kpis()
+    overview_filters = render_recommendation_filter_bar("overview")
+    page_recs = apply_recommendation_filters(
+        recommendations,
+        status=overview_filters["status"],
+        category=overview_filters["category"],
+        owner=overview_filters["owner"],
+        team=overview_filters["team"],
+        min_confidence=overview_filters["min_confidence"],
+    )
+    render_kpis(page_recs)
 
     st.subheader("Savings Opportunity")
     left, center, right = st.columns([1.2, 1, 1])
 
     with left:
-        by_category = recommendations.groupby("category", as_index=False)["projected_monthly_savings"].sum()
+        by_category = page_recs.groupby("category", as_index=False)["projected_monthly_savings"].sum()
         fig = px.bar(
             by_category,
             x="projected_monthly_savings",
@@ -300,7 +436,7 @@ def overview():
         st.plotly_chart(fig, use_container_width=True)
 
     with center:
-        severity = recommendations.groupby("severity", as_index=False).size()
+        severity = page_recs.groupby("severity", as_index=False).size()
         severity["severity"] = pd.Categorical(severity["severity"], severity_order, ordered=True)
         severity = severity.sort_values("severity")
         fig = px.pie(severity, values="size", names="severity", hole=0.55)
@@ -308,44 +444,33 @@ def overview():
         st.plotly_chart(fig, use_container_width=True)
 
     with right:
-        status = recommendations.groupby("status", as_index=False)["projected_monthly_savings"].sum()
+        status = page_recs.groupby("status", as_index=False)["projected_monthly_savings"].sum()
         fig = px.bar(status, x="status", y="projected_monthly_savings", text="projected_monthly_savings")
         fig.update_traces(texttemplate="$%{text:,.0f}", marker_color="#4C78A8")
         fig.update_layout(height=320, margin=dict(l=10, r=10, t=20, b=10), xaxis_title="", yaxis_title="")
         st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Highest Value Recommendations")
-    recommendation_table(filtered_recs.head(8))
+    recommendation_table(page_recs.head(8))
 
 
 def recommendations_page():
     st.title("Recommendations")
-    render_kpis()
-    page_recs = recommendations.copy()
-    filter_cols = st.columns([1, 1.2, 1.2, 1.2, 1])
-    with filter_cols[0]:
-        severity = st.selectbox("Severity", ["All"] + severity_order)
-    with filter_cols[1]:
-        category = st.selectbox("Category", ["All"] + sorted(recommendations["category"].unique().tolist()))
-    with filter_cols[2]:
-        team = st.selectbox("Team", ["All"] + sorted(recommendations["team"].unique().tolist()))
-    with filter_cols[3]:
-        owner = st.selectbox("Owner", ["All"] + sorted(recommendations["owner"].unique().tolist()))
-    with filter_cols[4]:
-        daily_savings_sort = st.selectbox("Daily savings", ["High to low", "Low to high"])
-
-    if severity != "All":
-        page_recs = page_recs[page_recs["severity"] == severity]
-    if category != "All":
-        page_recs = page_recs[page_recs["category"] == category]
-    if team != "All":
-        page_recs = page_recs[page_recs["team"] == team]
-    if owner != "All":
-        page_recs = page_recs[page_recs["owner"] == owner]
-    if status_filter != "All":
-        page_recs = page_recs[page_recs["status"] == status_filter]
-    page_recs = page_recs[page_recs["confidence"] >= min_confidence]
-    sort_ascending = daily_savings_sort == "Low to high"
+    rec_filters = render_recommendation_filter_bar(
+        "recommendations", include_severity=True, include_daily_sort=True
+    )
+    page_recs = apply_recommendation_filters(
+        recommendations,
+        status=rec_filters["status"],
+        category=rec_filters["category"],
+        owner=rec_filters["owner"],
+        team=rec_filters["team"],
+        min_confidence=rec_filters["min_confidence"],
+    )
+    if rec_filters["severity"] != "All":
+        page_recs = page_recs[page_recs["severity"] == rec_filters["severity"]]
+    sort_ascending = rec_filters["daily_savings_sort"] == "Low to high"
+    render_kpis(page_recs)
 
     render_filter_chips(page_recs)
     selected_recommendation_id = scrolling_recommendation_table(
@@ -521,17 +646,26 @@ def tasks_page():
 
 def savings_realization_page():
     st.title("Savings Realization")
+    savings_filters = render_recommendation_filter_bar("savings")
+    page_recs = apply_recommendation_filters(
+        recommendations,
+        status=savings_filters["status"],
+        category=savings_filters["category"],
+        owner=savings_filters["owner"],
+        team=savings_filters["team"],
+        min_confidence=savings_filters["min_confidence"],
+    )
     period = st.segmented_control("Period", ["MTD", "QTD", "YTD", "Since inception"], default="YTD")
-    realized, projected = savings_by_period(filtered_recs, period)
-    open_missed = filtered_recs.loc[filtered_recs["is_open"], "missed_savings_to_date"].sum()
+    realized, projected = savings_by_period(page_recs, period)
+    open_missed = page_recs.loc[page_recs["is_open"], "missed_savings_to_date"].sum()
 
     cols = st.columns(4)
     cols[0].metric("Realized Savings", money(realized), period)
     cols[1].metric("Projected Opportunity", money(projected), period)
     cols[2].metric("Missed Savings", money(open_missed), "open items")
-    cols[3].metric("Open Recommendations", f"{filtered_recs['is_open'].sum():,.0f}", "filtered view")
+    cols[3].metric("Open Recommendations", f"{page_recs['is_open'].sum():,.0f}", "filtered view")
 
-    tracker = filtered_recs.groupby("status", as_index=False).agg(
+    tracker = page_recs.groupby("status", as_index=False).agg(
         monthly_savings=("projected_monthly_savings", "sum"),
         realized_monthly_savings=("realized_monthly_savings", "sum"),
         missed_savings=("missed_savings_to_date", "sum"),
@@ -541,7 +675,7 @@ def savings_realization_page():
 
     left, right = st.columns([1.1, 1])
     with left:
-        by_category = filtered_recs.groupby("category", as_index=False).agg(
+        by_category = page_recs.groupby("category", as_index=False).agg(
             projected=("projected_monthly_savings", "sum"),
             realized=("realized_monthly_savings", "sum"),
             missed=("missed_savings_to_date", "sum"),
@@ -558,7 +692,7 @@ def savings_realization_page():
         fig.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
         st.plotly_chart(fig, use_container_width=True)
     with right:
-        by_owner = filtered_recs.groupby(["owner", "team"], as_index=False).agg(
+        by_owner = page_recs.groupby(["owner", "team"], as_index=False).agg(
             projected_monthly_savings=("projected_monthly_savings", "sum"),
             realized_monthly_savings=("realized_monthly_savings", "sum"),
             missed_savings=("missed_savings_to_date", "sum"),
@@ -605,7 +739,7 @@ def savings_realization_page():
         "realized_monthly_savings",
     ]
     st.dataframe(
-        filtered_recs[queue_cols].sort_values(["missed_savings_to_date", "days_lingering"], ascending=False),
+        page_recs[queue_cols].sort_values(["missed_savings_to_date", "days_lingering"], ascending=False),
         use_container_width=True,
         hide_index=True,
         column_config={
@@ -622,12 +756,12 @@ def savings_realization_page():
         on="recommendation_id",
         how="left",
     )
-    if category_filter != "All":
-        event_view = event_view[event_view["category"] == category_filter]
-    if owner_filter != "All":
-        event_view = event_view[event_view["owner"] == owner_filter]
-    if team_filter != "All":
-        event_view = event_view[event_view["team"] == team_filter]
+    if savings_filters["category"] != "All":
+        event_view = event_view[event_view["category"] == savings_filters["category"]]
+    if savings_filters["owner"] != "All":
+        event_view = event_view[event_view["owner"] == savings_filters["owner"]]
+    if savings_filters["team"] != "All":
+        event_view = event_view[event_view["team"] == savings_filters["team"]]
     st.dataframe(
         event_view.sort_values("event_ts", ascending=False),
         use_container_width=True,
@@ -701,6 +835,33 @@ def settings_page():
         st.toggle("Read-only recommendations", value=True)
         st.toggle("Generate implementation SQL", value=True)
         st.toggle("Allow approved SQL execution", value=False)
+
+    st.subheader("Snowflake Connection")
+    config_rows = []
+    for key in ["account", "user", "role", "warehouse", "database", "schema", "authenticator"]:
+        value = snowflake_config.get(key)
+        config_rows.append((key, "Configured" if value else "Missing", "" if not value else str(value)))
+    st.dataframe(
+        pd.DataFrame(config_rows, columns=["Setting", "Status", "Value"]),
+        use_container_width=True,
+        hide_index=True,
+    )
+    left_conn, right_conn = st.columns([1, 2])
+    with left_conn:
+        if st.button("Test Snowflake connection"):
+            if not snowflake_config:
+                st.error("No Snowflake secrets found. Copy .streamlit/secrets.toml.example to .streamlit/secrets.toml and fill in credentials.")
+            else:
+                try:
+                    result = test_connection(snowflake_config)
+                    st.success(f"Connected to {result['account']} in {result['region']} on Snowflake {result['version']}.")
+                except Exception as exc:
+                    st.error(f"Connection failed: {exc}")
+    with right_conn:
+        st.caption(
+            "Live mode currently pulls warehouse metering history only. Recommendations, scan history, storage, tasks, "
+            "and savings realization remain in demo data until the scan engine is implemented."
+        )
 
     st.subheader("Native App Readiness Checklist")
     readiness = pd.DataFrame(
