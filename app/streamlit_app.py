@@ -210,6 +210,12 @@ REPORT_DETAIL_LIMITS = {
     "Standard detail": {"backlog": 40, "audit": 40, "section": 25},
     "Full detail": {"backlog": 200, "audit": 200, "section": 100},
 }
+ACCESS_ROLES = ["CostOps Admin", "CostOps Operator", "CostOps Viewer"]
+ROLE_PERMISSIONS = {
+    "CostOps Admin": {"admin", "operate", "assign", "view_sensitive"},
+    "CostOps Operator": {"operate", "assign", "view_sensitive"},
+    "CostOps Viewer": set(),
+}
 
 
 @st.cache_data
@@ -227,6 +233,11 @@ def get_snowflake_config():
         return dict(st.secrets.get("snowflake", {}))
     except Exception:
         return {}
+
+
+def has_permission(permission):
+    role = st.session_state.get("current_access_role", ACCESS_ROLES[0])
+    return permission in ROLE_PERMISSIONS.get(role, set())
 
 
 data = load_data()
@@ -484,6 +495,7 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
             "Due date",
             value=pd.Timestamp(rec["due_date"]).date(),
             key=f"{selected_recommendation_id}_due_date",
+            disabled=not has_permission("assign"),
         )
         notes = st.text_area(
             "Ownership notes",
@@ -491,9 +503,15 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
             placeholder="Add handoff context, dependency notes, or owner commitments.",
             height=80,
             key=f"{selected_recommendation_id}_notes",
+            disabled=not has_permission("assign"),
         )
         assignment_action_cols = st.columns([1, 2.2])
-        if assignment_action_cols[0].button("Save ownership", key=f"{selected_recommendation_id}_save_assignment", type="primary"):
+        if assignment_action_cols[0].button(
+            "Save ownership",
+            key=f"{selected_recommendation_id}_save_assignment",
+            type="primary",
+            disabled=not has_permission("assign"),
+        ):
             update_recommendation_assignment(
                 st.session_state,
                 selected_recommendation_id,
@@ -510,6 +528,8 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
         assignment_action_cols[1].caption(
             "Use ownership to route work by person, team, or role. Saved notes stay attached to the recommendation."
         )
+        if not has_permission("assign"):
+            st.caption("Viewer access: ownership changes are disabled for this session role.")
         action_cols = st.columns(6)
         action_labels = [
             ("Select", "Selected"),
@@ -521,7 +541,11 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
         ]
         for col, (label, status) in zip(action_cols, action_labels):
             disabled = rec["status"] == status
-            if col.button(label, disabled=disabled, key=f"{selected_recommendation_id}_{status}"):
+            if col.button(
+                label,
+                disabled=disabled or not has_permission("operate"),
+                key=f"{selected_recommendation_id}_{status}",
+            ):
                 update_recommendation_status(
                     st.session_state,
                     selected_recommendation_id,
@@ -535,7 +559,11 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
     with right:
         st.caption("Generated SQL or implementation guidance")
         st.code(rec["generated_sql"], language="sql")
-        if st.button("Log SQL copied", key=f"{selected_recommendation_id}_copy_sql"):
+        if st.button(
+            "Log SQL copied",
+            key=f"{selected_recommendation_id}_copy_sql",
+            disabled=not has_permission("operate"),
+        ):
             log_sql_copied(st.session_state, selected_recommendation_id, assigned_owner, AS_OF_DATE + pd.Timedelta(hours=12))
             st.toast("SQL copy event logged.")
             st.rerun()
@@ -2127,7 +2155,7 @@ def scan_control_page_section(credit_price):
         lookback_window = st.selectbox("Lookback window", ["7 days", "30 days", "90 days", "All available"], index=1)
     with right:
         st.selectbox("Next scheduled scan", ["2026-05-19 08:00", "2026-05-20 08:00", "Manual only"], index=0)
-        run_now = st.button("Run analysis now", type="primary")
+        run_now = st.button("Run analysis now", type="primary", disabled=not has_permission("operate"))
 
     lookback_days = {"7 days": 7, "30 days": 30, "90 days": 90, "All available": 365}[lookback_window]
     st.caption(
@@ -2135,6 +2163,8 @@ def scan_control_page_section(credit_price):
         "recommendations from demo warehouse, workload, task, and storage data. In Snowflake mode it attempts to "
         "read account usage metadata, then writes results to the local workflow store and optional Snowflake tables."
     )
+    if not has_permission("operate"):
+        st.info("Viewer access is active. Analysis runs require the CostOps Admin or CostOps Operator role.")
 
     if run_now:
         actor = "Ad hoc user"
@@ -2221,6 +2251,8 @@ def scan_control_page_section(credit_price):
 def settings_page():
     st.title("Settings")
     st.caption("POC controls for scan configuration, thresholds, and Snowflake Marketplace packaging assumptions.")
+    if not has_permission("admin"):
+        st.warning("Settings are read-only for this session role. CostOps Admin is required for connection and install actions.")
 
     left, center, right = st.columns(3)
     with left:
@@ -2235,9 +2267,9 @@ def settings_page():
         min_confidence_setting = st.slider("Default recommendation confidence", 0.0, 1.0, 0.70, 0.05)
     with right:
         st.subheader("Execution Mode")
-        st.toggle("Read-only recommendations", value=True)
-        st.toggle("Generate implementation SQL", value=True)
-        st.toggle("Allow approved SQL execution", value=False)
+        st.toggle("Read-only recommendations", value=True, disabled=not has_permission("admin"))
+        st.toggle("Generate implementation SQL", value=True, disabled=not has_permission("admin"))
+        st.toggle("Allow approved SQL execution", value=False, disabled=not has_permission("admin"))
 
     st.subheader("Snowflake Connection")
     config_rows = []
@@ -2251,7 +2283,7 @@ def settings_page():
     )
     left_conn, right_conn = st.columns([1, 2])
     with left_conn:
-        if st.button("Test Snowflake connection"):
+        if st.button("Test Snowflake connection", disabled=not has_permission("admin")):
             if not snowflake_config:
                 st.error("No Snowflake secrets found. Copy .streamlit/secrets.toml.example to .streamlit/secrets.toml and fill in credentials.")
             else:
@@ -2260,7 +2292,7 @@ def settings_page():
                     st.success(f"Connected to {result['account']} in {result['region']} on Snowflake {result['version']}.")
                 except Exception as exc:
                     st.error(f"Connection failed: {exc}")
-        if st.button("Initialize persistence schema"):
+        if st.button("Initialize persistence schema", disabled=not has_permission("admin")):
             if not snowflake_config:
                 st.error("No Snowflake secrets found. Add credentials before creating Snowflake objects.")
             else:
@@ -2274,6 +2306,14 @@ def settings_page():
             "Live mode can pull warehouse, query, task, and storage account-usage metadata. The persistence schema button creates the "
             "Snowflake tables and workflow procedures that will back recommendation status changes, audit events, "
             "scan history, and savings snapshots."
+        )
+        st.code(
+            "GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION <installed_app_name>;",
+            language="sql",
+        )
+        st.caption(
+            "Best practice is to have the consumer ACCOUNTADMIN or delegated installer run this grant explicitly after install "
+            "if they approve sharing ACCOUNT_USAGE metadata with the app."
         )
 
     st.subheader("Persistence Layer")
@@ -2305,6 +2345,17 @@ def settings_page():
         columns=["Area", "Status", "Next Step"],
     )
     st.dataframe(readiness, use_container_width=True, hide_index=True)
+
+    st.subheader("Marketplace Access Model")
+    access_model = pd.DataFrame(
+        [
+            ("CostOps Admin", "Installer / platform admin", "Install app, approve ACCOUNT_USAGE grant, run scans, configure settings"),
+            ("CostOps Operator", "Architect / engineer", "Review recommendations, manage ownership, validate implementation"),
+            ("CostOps Viewer", "Leadership / read-only", "View dashboards, reports, and realized savings without making changes"),
+        ],
+        columns=["Application Role", "Typical User", "Scope"],
+    )
+    st.dataframe(access_model, use_container_width=True, hide_index=True)
 
     st.subheader("Rule Catalog")
     rules = pd.DataFrame(RULE_CATALOG)
@@ -2357,6 +2408,12 @@ current_page = st.navigation(navigation_pages, position="sidebar", expanded=True
 
 with st.sidebar:
     st.title("Cost Optimization")
+    st.session_state["current_access_role"] = st.selectbox(
+        "Access role",
+        ACCESS_ROLES,
+        index=ACCESS_ROLES.index(st.session_state.get("current_access_role", "CostOps Admin")),
+        help="Local POC role selector that mirrors the intended Marketplace application-role model.",
+    )
     data_source_mode = st.selectbox("Data source", ["Sample data", "Snowflake"], index=0)
     if data_source_mode == "Snowflake":
         if snowflake_config:
@@ -2374,5 +2431,6 @@ with st.sidebar:
     st.caption("Data source status")
     state = "complete" if data_source_status in {"Sample data loaded", "Snowflake warehouse metering loaded"} else "error"
     st.status(data_source_status, state=state, expanded=False)
+    st.caption(f"Session role: {st.session_state['current_access_role']}")
 
 current_page.run()

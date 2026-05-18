@@ -1,10 +1,16 @@
-CREATE APPLICATION ROLE IF NOT EXISTS app_public;
+CREATE APPLICATION ROLE IF NOT EXISTS costops_admin;
+CREATE APPLICATION ROLE IF NOT EXISTS costops_operator;
+CREATE APPLICATION ROLE IF NOT EXISTS costops_viewer;
 
 CREATE SCHEMA IF NOT EXISTS app_schema;
-GRANT USAGE ON SCHEMA app_schema TO APPLICATION ROLE app_public;
+GRANT USAGE ON SCHEMA app_schema TO APPLICATION ROLE costops_admin;
+GRANT USAGE ON SCHEMA app_schema TO APPLICATION ROLE costops_operator;
+GRANT USAGE ON SCHEMA app_schema TO APPLICATION ROLE costops_viewer;
 
 CREATE SCHEMA IF NOT EXISTS costops_app;
-GRANT USAGE ON SCHEMA costops_app TO APPLICATION ROLE app_public;
+GRANT USAGE ON SCHEMA costops_app TO APPLICATION ROLE costops_admin;
+GRANT USAGE ON SCHEMA costops_app TO APPLICATION ROLE costops_operator;
+GRANT USAGE ON SCHEMA costops_app TO APPLICATION ROLE costops_viewer;
 
 CREATE TABLE IF NOT EXISTS costops_app.cost_recommendation (
     recommendation_id STRING NOT NULL,
@@ -108,5 +114,10 @@ CREATE STREAMLIT IF NOT EXISTS app_schema.costops_streamlit
     FROM '/streamlit'
     MAIN_FILE = 'streamlit_app.py';
 
-GRANT USAGE ON STREAMLIT app_schema.costops_streamlit TO APPLICATION ROLE app_public;
-GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA costops_app TO APPLICATION ROLE app_public;
+GRANT USAGE ON STREAMLIT app_schema.costops_streamlit TO APPLICATION ROLE costops_admin;
+GRANT USAGE ON STREAMLIT app_schema.costops_streamlit TO APPLICATION ROLE costops_operator;
+GRANT USAGE ON STREAMLIT app_schema.costops_streamlit TO APPLICATION ROLE costops_viewer;
+
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA costops_app TO APPLICATION ROLE costops_admin;
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA costops_app TO APPLICATION ROLE costops_operator;
+GRANT SELECT ON ALL TABLES IN SCHEMA costops_app TO APPLICATION ROLE costops_viewer;

@@ -98,3 +98,13 @@ The draft `native_app/` package includes a `manifest.yml`, setup script, environ
 - Replace the left navigation radio list with a denser app-style sidebar using visual section markers, stronger active-state styling, and compact labels. Streamlit does not give full custom navigation primitives out of the box, so the first pass should use CSS and structured navigation groups before considering a custom component.
 - Add a dedicated scheduled-task implementation after live scan permissions are validated in a Snowflake test account.
 - Add rule-level threshold controls for warehouse utilization, task frequency, storage staleness, and query scan volume.
+
+## Security Model
+
+The current POC now mirrors the intended Marketplace access pattern:
+
+- `CostOps Admin`: installer/platform admin with scan, connection, and settings privileges
+- `CostOps Operator`: recommendation owner and workflow operator
+- `CostOps Viewer`: read-only access to dashboards, reports, and owned queues
+
+For a consumer-installed Native App, `ACCOUNT_USAGE` access should be treated as an explicit admin approval step rather than something granted broadly to analyst roles.
