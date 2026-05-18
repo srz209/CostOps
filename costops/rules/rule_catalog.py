@@ -56,11 +56,27 @@ RULE_CATALOG = [
         "mvp": True,
     },
     {
+        "rule_id": "TASK_FAILURE_CHURN",
+        "category": "Task",
+        "rule": "Task failure churn",
+        "data_sources": "TASK_HISTORY",
+        "output": "Pause, repair, or assign owner recommendation",
+        "mvp": True,
+    },
+    {
         "rule_id": "STORAGE_STALE_OBJECT",
         "category": "Storage",
         "rule": "Unused or stale table",
         "data_sources": "TABLES, ACCESS_HISTORY",
         "output": "Archive, drop, or owner-review recommendation",
+        "mvp": True,
+    },
+    {
+        "rule_id": "DEV_CLONE_DUPLICATION",
+        "category": "Storage",
+        "rule": "Dev / QA duplication",
+        "data_sources": "TABLE_STORAGE_METRICS, clone lineage",
+        "output": "Zero-copy clone lifecycle recommendation",
         "mvp": True,
     },
     {
@@ -80,4 +96,3 @@ RULE_CATALOG = [
         "mvp": True,
     },
 ]
-

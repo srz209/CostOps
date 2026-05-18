@@ -1,4 +1,7 @@
 from pathlib import Path
+import json
+
+import pandas as pd
 
 from costops.data.snowflake_loader import connect
 
@@ -37,3 +40,258 @@ def log_sql_copied(config, recommendation_id, actor):
                 (recommendation_id, actor),
             )
             return cursor.fetchone()[0]
+
+
+def persist_analysis_result(config, scan_result):
+    with connect(config) as conn:
+        with conn.cursor() as cursor:
+            upsert_scan_run(cursor, scan_result["scan_run"])
+            for _, recommendation in scan_result["recommendations"].iterrows():
+                upsert_recommendation(cursor, recommendation)
+            for _, finding in scan_result["findings"].iterrows():
+                insert_finding(cursor, finding)
+        conn.commit()
+
+
+def upsert_scan_run(cursor, scan_run):
+    cursor.execute(
+        """
+        MERGE INTO COSTOPS_APP.SCAN_RUN target
+        USING (
+            SELECT
+                %s AS scan_run_id,
+                %s AS scan_type,
+                %s AS scan_scope,
+                %s AS schedule_name,
+                %s AS started_at,
+                %s AS completed_at,
+                %s AS scan_status,
+                %s AS credits_estimated,
+                %s AS scan_cost_usd,
+                %s AS recommendations_found,
+                %s AS recommendations_new,
+                %s AS recommendations_updated,
+                %s AS identified_monthly_savings,
+                %s AS initiated_by,
+                %s AS error_message
+        ) source
+        ON target.scan_run_id = source.scan_run_id
+        WHEN MATCHED THEN UPDATE SET
+            completed_at = source.completed_at,
+            scan_status = source.scan_status,
+            schedule_name = source.schedule_name,
+            credits_estimated = source.credits_estimated,
+            scan_cost_usd = source.scan_cost_usd,
+            recommendations_found = source.recommendations_found,
+            recommendations_new = source.recommendations_new,
+            recommendations_updated = source.recommendations_updated,
+            identified_monthly_savings = source.identified_monthly_savings,
+            error_message = source.error_message
+        WHEN NOT MATCHED THEN INSERT (
+            scan_run_id,
+            scan_type,
+            scan_scope,
+            schedule_name,
+            started_at,
+            completed_at,
+            scan_status,
+            credits_estimated,
+            scan_cost_usd,
+            recommendations_found,
+            recommendations_new,
+            recommendations_updated,
+            identified_monthly_savings,
+            initiated_by,
+            error_message
+        )
+        VALUES (
+            source.scan_run_id,
+            source.scan_type,
+            source.scan_scope,
+            source.schedule_name,
+            source.started_at,
+            source.completed_at,
+            source.scan_status,
+            source.credits_estimated,
+            source.scan_cost_usd,
+            source.recommendations_found,
+            source.recommendations_new,
+            source.recommendations_updated,
+            source.identified_monthly_savings,
+            source.initiated_by,
+            source.error_message
+        )
+        """,
+        (
+            scan_run["scan_id"],
+            scan_run["scan_type"],
+            scan_run["scan_scope"],
+            scan_run.get("schedule_name"),
+            clean_value(scan_run["started_at"]),
+            clean_value(scan_run["completed_at"]),
+            scan_run["status"],
+            scan_run["credits_estimated"],
+            scan_run["scan_cost_usd"],
+            scan_run["recommendations_found"],
+            scan_run["recommendations_new"],
+            scan_run["recommendations_updated"],
+            scan_run["identified_monthly_savings"],
+            scan_run["initiated_by"],
+            scan_run["error_message"],
+        ),
+    )
+
+
+def upsert_recommendation(cursor, recommendation):
+    cursor.execute(
+        """
+        MERGE INTO COSTOPS_APP.COST_RECOMMENDATION target
+        USING (
+            SELECT
+                %s AS recommendation_id,
+                %s AS scan_run_id,
+                %s AS recommendation_category,
+                %s AS recommendation_subcategory,
+                %s AS title,
+                %s AS object_name,
+                %s AS severity,
+                %s AS confidence_score,
+                %s AS projected_daily_savings,
+                %s AS projected_monthly_savings,
+                %s AS projected_annual_savings,
+                %s AS implementation_risk,
+                %s AS implementation_effort,
+                %s AS recommendation_status,
+                %s AS owner_name,
+                %s AS team_name,
+                %s AS generated_sql,
+                %s AS evidence,
+                %s AS first_seen_at,
+                %s AS last_seen_at
+        ) source
+        ON target.recommendation_id = source.recommendation_id
+        WHEN MATCHED THEN UPDATE SET
+            scan_run_id = source.scan_run_id,
+            recommendation_category = source.recommendation_category,
+            recommendation_subcategory = source.recommendation_subcategory,
+            title = source.title,
+            object_name = source.object_name,
+            severity = source.severity,
+            confidence_score = source.confidence_score,
+            projected_daily_savings = source.projected_daily_savings,
+            projected_monthly_savings = source.projected_monthly_savings,
+            projected_annual_savings = source.projected_annual_savings,
+            implementation_risk = source.implementation_risk,
+            implementation_effort = source.implementation_effort,
+            owner_name = source.owner_name,
+            team_name = source.team_name,
+            generated_sql = source.generated_sql,
+            evidence = source.evidence,
+            last_seen_at = source.last_seen_at,
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN INSERT (
+            recommendation_id,
+            scan_run_id,
+            recommendation_category,
+            recommendation_subcategory,
+            title,
+            object_name,
+            severity,
+            confidence_score,
+            projected_daily_savings,
+            projected_monthly_savings,
+            projected_annual_savings,
+            implementation_risk,
+            implementation_effort,
+            recommendation_status,
+            owner_name,
+            team_name,
+            generated_sql,
+            evidence,
+            first_seen_at,
+            last_seen_at
+        )
+        VALUES (
+            source.recommendation_id,
+            source.scan_run_id,
+            source.recommendation_category,
+            source.recommendation_subcategory,
+            source.title,
+            source.object_name,
+            source.severity,
+            source.confidence_score,
+            source.projected_daily_savings,
+            source.projected_monthly_savings,
+            source.projected_annual_savings,
+            source.implementation_risk,
+            source.implementation_effort,
+            source.recommendation_status,
+            source.owner_name,
+            source.team_name,
+            source.generated_sql,
+            source.evidence,
+            source.first_seen_at,
+            source.last_seen_at
+        )
+        """,
+        (
+            recommendation["recommendation_id"],
+            recommendation.get("scan_run_id"),
+            recommendation["category"],
+            recommendation["subcategory"],
+            recommendation["title"],
+            recommendation["object_name"],
+            recommendation["severity"],
+            clean_value(recommendation["confidence"]),
+            clean_value(recommendation["projected_daily_savings"]),
+            clean_value(recommendation["projected_monthly_savings"]),
+            clean_value(recommendation["projected_annual_savings"]),
+            recommendation["risk"],
+            recommendation["effort"],
+            recommendation["status"],
+            recommendation["owner"],
+            recommendation["team"],
+            recommendation["generated_sql"],
+            recommendation["evidence"],
+            clean_value(recommendation["first_seen_at"]),
+            clean_value(recommendation["last_seen_at"]),
+        ),
+    )
+
+
+def insert_finding(cursor, finding):
+    cursor.execute(
+        """
+        INSERT INTO COSTOPS_APP.SCAN_FINDING (
+            finding_id,
+            scan_run_id,
+            recommendation_id,
+            finding_category,
+            object_name,
+            severity,
+            confidence_score,
+            projected_monthly_savings,
+            finding_payload
+        )
+        SELECT %s, %s, %s, %s, %s, %s, %s, %s, PARSE_JSON(%s)
+        """,
+        (
+            finding["finding_id"],
+            finding["scan_run_id"],
+            finding["recommendation_id"],
+            finding["finding_category"],
+            finding["object_name"],
+            finding["severity"],
+            clean_value(finding["confidence_score"]),
+            clean_value(finding["projected_monthly_savings"]),
+            json.dumps(finding["finding_payload"]),
+        ),
+    )
+
+
+def clean_value(value):
+    if pd.isna(value):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    return value

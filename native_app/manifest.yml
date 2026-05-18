@@ -1,0 +1,17 @@
+manifest_version: 2
+
+version:
+  name: v0_1
+  patch: 1
+  label: "Cost optimization POC"
+  comment: "Draft Snowflake Native App package skeleton for local validation."
+
+artifacts:
+  setup_script: setup_script.sql
+  readme: readme.md
+  default_streamlit: app_schema.costops_streamlit
+
+configuration:
+  log_level: INFO
+  trace_level: OFF
+  metric_level: BASIC

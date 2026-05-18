@@ -20,13 +20,16 @@ from costops.data.sample_loader import load_sample_data
 from costops.data.recommendation_store import (
     initialize_session_store,
     log_sql_copied,
+    merge_scan_results,
     recommendation_events_frame,
     recommendations_frame,
+    scan_runs_frame,
     update_recommendation_status,
 )
-from costops.data.snowflake_repository import initialize_app_schema
-from costops.data.snowflake_loader import load_warehouse_metering_history, test_connection
+from costops.data.snowflake_repository import initialize_app_schema, persist_analysis_result
+from costops.data.snowflake_loader import load_account_usage_snapshot, load_warehouse_metering_history, test_connection
 from costops.rules.rule_catalog import RULE_CATALOG
+from costops.services.analysis_runner import AnalysisConfig, run_environment_analysis
 from costops.services.metrics import (
     enrich_recommendation_lifecycle,
     latest_successful_scan,
@@ -227,11 +230,11 @@ def get_snowflake_config():
 
 data = load_data()
 AS_OF_DATE = pd.Timestamp("2026-05-18")
-initialize_session_store(st.session_state, data["recommendations"], data["recommendation_events"])
+initialize_session_store(st.session_state, data["recommendations"], data["recommendation_events"], data["scan_runs"])
 
 recommendations = enrich_recommendation_lifecycle(recommendations_frame(st.session_state), AS_OF_DATE)
 recommendation_events = recommendation_events_frame(st.session_state)
-scan_runs = data["scan_runs"]
+scan_runs = scan_runs_frame(st.session_state)
 warehouses = data["warehouses"]
 data_source_status = "Sample data loaded"
 data_source_mode = "Sample data"
@@ -2004,16 +2007,89 @@ def scan_control_page_section(credit_price):
 
     left, center, right = st.columns([1.1, 1.1, 1])
     with left:
-        st.selectbox("Schedule", ["Daily", "Weekly", "Monthly", "Off"], index=0)
-        st.time_input("Preferred scan time", value=pd.Timestamp("2026-05-18 08:00").time())
+        schedule = st.selectbox("Schedule", ["Daily", "Weekly", "Monthly", "Off"], index=0)
+        preferred_time = st.time_input("Preferred scan time", value=pd.Timestamp("2026-05-18 08:00").time())
     with center:
-        st.selectbox("Scan scope", ["Full", "Incremental"], index=0)
-        st.selectbox("Lookback window", ["7 days", "30 days", "90 days", "All available"], index=1)
+        scan_scope = st.selectbox("Scan scope", ["Full", "Incremental"], index=0)
+        lookback_window = st.selectbox("Lookback window", ["7 days", "30 days", "90 days", "All available"], index=1)
     with right:
         st.selectbox("Next scheduled scan", ["2026-05-19 08:00", "2026-05-20 08:00", "Manual only"], index=0)
-        st.button("Run scan now", type="primary")
+        run_now = st.button("Run analysis now", type="primary")
 
-    st.caption("POC mode: controls are not connected to Snowflake yet. They model the future scheduled/ad hoc scan workflow.")
+    lookback_days = {"7 days": 7, "30 days": 30, "90 days": 90, "All available": 365}[lookback_window]
+    st.caption(
+        "Run analysis now uses the CostOps rule engine against the selected source. In sample mode it regenerates "
+        "recommendations from demo warehouse, workload, task, and storage data. In Snowflake mode it attempts to "
+        "read account usage metadata, then writes results to the local workflow store and optional Snowflake tables."
+    )
+
+    if run_now:
+        actor = "Ad hoc user"
+        run_ts = pd.Timestamp.now().tz_localize(None)
+        analysis_inputs = {
+            "warehouses": warehouses,
+            "workloads": workloads,
+            "storage": storage,
+            "tasks": tasks,
+        }
+        if data_source_mode == "Snowflake" and snowflake_config:
+            try:
+                analysis_inputs = load_account_usage_snapshot(
+                    snowflake_config,
+                    lookback_days=lookback_days,
+                    credit_price=credit_price,
+                )
+            except Exception as exc:
+                st.warning(f"Snowflake metadata scan failed; running against currently loaded data instead. {exc}")
+
+        scan_result = run_environment_analysis(
+            analysis_inputs["warehouses"],
+            analysis_inputs["workloads"],
+            analysis_inputs["storage"],
+            analysis_inputs["tasks"],
+            AnalysisConfig(
+                credit_price=credit_price,
+                lookback_days=lookback_days,
+                scan_scope=scan_scope,
+                initiated_by=actor,
+                source_mode=data_source_mode,
+            ),
+            as_of_ts=run_ts,
+        )
+        scan_result["scan_run"]["frequency"] = schedule
+        scan_result["scan_run"]["schedule_name"] = f"{schedule} at {preferred_time.strftime('%H:%M')}"
+        merge_scan_results(st.session_state, scan_result, actor, run_ts)
+
+        if data_source_mode == "Snowflake" and snowflake_config:
+            try:
+                persist_analysis_result(snowflake_config, scan_result)
+                st.success(
+                    f"{scan_result['scan_run']['scan_id']} generated {len(scan_result['recommendations'])} recommendations "
+                    "and persisted them to Snowflake."
+                )
+            except Exception as exc:
+                st.warning(
+                    f"{scan_result['scan_run']['scan_id']} generated {len(scan_result['recommendations'])} recommendations "
+                    f"locally, but Snowflake persistence failed: {exc}"
+                )
+        else:
+            st.success(
+                f"{scan_result['scan_run']['scan_id']} generated {len(scan_result['recommendations'])} recommendations "
+                "from the local analysis runner."
+            )
+        st.rerun()
+
+    st.subheader("Analysis Runner Coverage")
+    coverage = pd.DataFrame(
+        [
+            ("Warehouse metering", len(warehouses), "Oversizing, idle runtime, auto-suspend tuning"),
+            ("Query/workload history", len(workloads), "Full refresh, scan volume, spill reduction"),
+            ("Task history", len(tasks), "Over-frequent schedules and failure churn"),
+            ("Storage objects", len(storage), "Stale objects and dev/QA duplication"),
+        ],
+        columns=["Source", "Rows Available", "Rules Applied"],
+    )
+    st.dataframe(coverage, use_container_width=True, hide_index=True)
 
     st.subheader("Scan Run History")
     st.dataframe(
@@ -2082,7 +2158,7 @@ def settings_page():
                     st.error(f"Schema initialization failed: {exc}")
     with right_conn:
         st.caption(
-            "Live mode currently pulls warehouse metering history only. The persistence schema button creates the "
+            "Live mode can pull warehouse, query, task, and storage account-usage metadata. The persistence schema button creates the "
             "Snowflake tables and workflow procedures that will back recommendation status changes, audit events, "
             "scan history, and savings snapshots."
         )
@@ -2094,6 +2170,8 @@ def settings_page():
             ("Workflow procedures", "sql/app/002_recommendation_workflow_procedures.sql", "Status updates and SQL-copy audit events"),
             ("Local adapter", "costops/data/recommendation_store.py", "Session-backed workflow store for POC actions"),
             ("Snowflake adapter", "costops/data/snowflake_repository.py", "Schema initialization and procedure calls"),
+            ("Analysis runner", "costops/services/analysis_runner.py", "Turns warehouse, workload, task, and storage metadata into recommendations"),
+            ("Native App scaffold", "native_app/", "Draft manifest, setup script, readme, and environment file"),
         ],
         columns=["Asset", "Path", "Purpose"],
     )
@@ -2102,10 +2180,11 @@ def settings_page():
     st.subheader("Native App Readiness Checklist")
     readiness = pd.DataFrame(
         [
-            ("Application package", "Not started", "manifest.yml and setup_script.sql"),
+            ("Application package", "Drafted", "Validate native_app manifest and setup script in a Snowflake test package"),
             ("Privilege model", "Not started", "Document access to account usage metadata"),
             ("Persistence schema", "POC ready", "Core tables and workflow procedures created under sql/app"),
-            ("Scan procedure", "POC only", "Replace sample data with SQL-backed scan"),
+            ("Analysis runner", "POC ready", "Rules generate recommendations from warehouse, workload, task, and storage metadata"),
+            ("Scan procedure", "Next", "Move Python runner logic into Snowflake-executable stored procedure/task path"),
             ("Scheduled task", "Not started", "Nightly scan option"),
             ("Marketplace listing", "Not started", "Screenshots, support, security notes"),
             ("Customer install test", "Not started", "Private listing or controlled account"),
