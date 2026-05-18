@@ -14,10 +14,12 @@ from costops.data.sample_loader import load_sample_data
 from costops.rules.rule_catalog import RULE_CATALOG
 from costops.services.metrics import (
     enrich_recommendation_lifecycle,
+    latest_successful_scan,
     money,
     projected_monthly_warehouse_spend,
     recommendation_summary,
     savings_by_period,
+    scan_freshness,
 )
 
 
@@ -30,6 +32,50 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+st.markdown(
+    """
+    <style>
+    div[data-testid="stMetric"] {
+        padding: 0.15rem 0;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 1.05rem;
+    }
+    div[data-testid="stMetricLabel"] {
+        font-size: 0.74rem;
+    }
+    .compact-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        margin: 0.25rem 0 0.45rem 0;
+    }
+    .compact-chip {
+        border: 1px solid #d8dee9;
+        border-radius: 6px;
+        padding: 0.18rem 0.45rem;
+        font-size: 0.78rem;
+        line-height: 1.15rem;
+        background: #f8fafc;
+    }
+    .compact-chip strong {
+        font-size: 0.86rem;
+    }
+    .compact-title {
+        font-size: 1rem;
+        font-weight: 600;
+        margin: 0.25rem 0 0.15rem 0;
+    }
+    .compact-meta {
+        font-size: 0.78rem;
+        color: #4b5563;
+        margin-bottom: 0.3rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 @st.cache_data
 def load_data():
@@ -40,6 +86,7 @@ data = load_data()
 AS_OF_DATE = pd.Timestamp("2026-05-18")
 recommendations = enrich_recommendation_lifecycle(data["recommendations"], AS_OF_DATE)
 recommendation_events = data["recommendation_events"]
+scan_runs = data["scan_runs"]
 warehouses = data["warehouses"]
 workloads = data["workloads"]
 storage = data["storage"]
@@ -101,7 +148,7 @@ def render_kpis():
     cols[3].metric("Critical Findings", f"{summary['critical_count']}", "highest priority")
 
 
-def recommendation_table(df):
+def recommendation_table(df, key="recommendation_table", selectable=False, height=None, sort_by=None, ascending=False):
     display = df[
         [
             "recommendation_id",
@@ -120,12 +167,18 @@ def recommendation_table(df):
             "effort",
             "status",
         ]
-    ].sort_values(["projected_monthly_savings", "confidence"], ascending=[False, False])
-    st.dataframe(
-        display,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
+    ]
+    if sort_by:
+        display = display.sort_values([sort_by, "confidence"], ascending=[ascending, False])
+    else:
+        display = display.sort_values(["projected_monthly_savings", "confidence"], ascending=[False, False])
+    table_kwargs = {
+        "use_container_width": True,
+        "hide_index": True,
+        "key": key,
+        "on_select": "rerun" if selectable else "ignore",
+        "selection_mode": "single-row" if selectable else "multi-row",
+        "column_config": {
             "recommendation_id": "ID",
             "projected_daily_savings": st.column_config.NumberColumn("Daily Savings", format="$%d"),
             "projected_monthly_savings": st.column_config.NumberColumn("Monthly Savings", format="$%d"),
@@ -133,37 +186,75 @@ def recommendation_table(df):
             "days_lingering": st.column_config.NumberColumn("Days Since First Seen", format="%d"),
             "confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1),
         },
+    }
+    if height is not None:
+        table_kwargs["height"] = height
+    event = st.dataframe(display, **table_kwargs)
+    if not selectable or not event.selection.rows:
+        return None
+    selected_position = event.selection.rows[0]
+    return display.iloc[selected_position]["recommendation_id"]
+
+
+def scrolling_recommendation_table(df, page_size=20, sort_by="projected_daily_savings", ascending=False):
+    sorted_df = df.sort_values([sort_by, "confidence"], ascending=[ascending, False]).reset_index(drop=True)
+    total_rows = len(sorted_df)
+    if total_rows == 0:
+        st.info("No recommendations match the current filters.")
+        return None
+
+    visible_rows = min(total_rows, 25)
+    table_height = 38 * (visible_rows + 1)
+    st.caption(f"{total_rows:,.0f} recommendations. Scroll the table to review more; select one row to open the detail below.")
+    selected_id = recommendation_table(
+        sorted_df,
+        key="recommendation_backlog_scroll",
+        selectable=True,
+        height=table_height,
+        sort_by=sort_by,
+        ascending=ascending,
     )
+    return selected_id or sorted_df.iloc[0]["recommendation_id"]
 
 
 def render_filter_chips(df):
-    chips = st.columns(5)
-    chips[0].metric("Visible Findings", f"{len(df):,.0f}")
-    chips[1].metric("Savings In View", money(df["projected_monthly_savings"].sum()))
-    chips[2].metric("Missed Savings", money(df["missed_savings_to_date"].sum()))
-    chips[3].metric("Avg Age", f"{df['days_lingering'].mean():.0f} days" if not df.empty else "0 days")
-    chips[4].metric("Realized", money(df["realized_monthly_savings"].sum()))
+    avg_age = f"{df['days_lingering'].mean():.0f} days" if not df.empty else "0 days"
+    st.markdown(
+        f"""
+        <div class="compact-chip-row">
+            <div class="compact-chip">Findings <strong>{len(df):,.0f}</strong></div>
+            <div class="compact-chip">Savings <strong>{money(df["projected_monthly_savings"].sum())}</strong></div>
+            <div class="compact-chip">Missed <strong>{money(df["missed_savings_to_date"].sum())}</strong></div>
+            <div class="compact-chip">Avg age <strong>{avg_age}</strong></div>
+            <div class="compact-chip">Realized <strong>{money(df["realized_monthly_savings"].sum())}</strong></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
-def render_recommendation_detail(df):
-    if df.empty:
+def render_recommendation_detail(df, selected_recommendation_id=None):
+    if df.empty or selected_recommendation_id is None:
         st.info("No recommendations match the current filters.")
         return
-    options = df["recommendation_id"] + " - " + df["title"]
-    selected = st.selectbox("Recommendation detail", options)
-    rec = df.loc[options == selected].iloc[0]
+    rec = df.loc[df["recommendation_id"] == selected_recommendation_id].iloc[0]
 
     left, right = st.columns([1.2, 1])
     with left:
-        st.subheader(rec["title"])
-        detail_cols = st.columns(4)
-        detail_cols[0].metric("Severity", rec["severity"])
-        detail_cols[1].metric("Monthly Savings", money(rec["projected_monthly_savings"]))
-        detail_cols[2].metric("Missed Savings", money(rec["missed_savings_to_date"]))
-        detail_cols[3].metric("Age", f"{rec['days_lingering']} days")
-        st.caption(
-            f"Object: {rec['object_name']} | Category: {rec['category']} / {rec['subcategory']} | "
-            f"Owner: {rec['owner']} | Team: {rec['team']} | Status: {rec['status']}"
+        st.markdown(f'<div class="compact-title">{rec["title"]}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class="compact-chip-row">
+                <div class="compact-chip">Severity <strong>{rec["severity"]}</strong></div>
+                <div class="compact-chip">Monthly <strong>{money(rec["projected_monthly_savings"])}</strong></div>
+                <div class="compact-chip">Missed <strong>{money(rec["missed_savings_to_date"])}</strong></div>
+                <div class="compact-chip">Age <strong>{rec["days_lingering"]} days</strong></div>
+            </div>
+            <div class="compact-meta">
+                {rec["object_name"]} | {rec["category"]} / {rec["subcategory"]} | {rec["owner"]} | {rec["team"]} | {rec["status"]}
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
         st.write(rec["evidence"])
         st.text_area("Implementation notes", value="", placeholder="Add validation notes, owner, or implementation decision.", height=90)
@@ -227,10 +318,40 @@ def overview():
 def recommendations_page():
     st.title("Recommendations")
     render_kpis()
-    render_filter_chips(filtered_recs)
-    st.subheader("Prioritized Backlog")
-    recommendation_table(filtered_recs)
-    render_recommendation_detail(filtered_recs)
+    page_recs = recommendations.copy()
+    filter_cols = st.columns([1, 1.2, 1.2, 1.2, 1])
+    with filter_cols[0]:
+        severity = st.selectbox("Severity", ["All"] + severity_order)
+    with filter_cols[1]:
+        category = st.selectbox("Category", ["All"] + sorted(recommendations["category"].unique().tolist()))
+    with filter_cols[2]:
+        team = st.selectbox("Team", ["All"] + sorted(recommendations["team"].unique().tolist()))
+    with filter_cols[3]:
+        owner = st.selectbox("Owner", ["All"] + sorted(recommendations["owner"].unique().tolist()))
+    with filter_cols[4]:
+        daily_savings_sort = st.selectbox("Daily savings", ["High to low", "Low to high"])
+
+    if severity != "All":
+        page_recs = page_recs[page_recs["severity"] == severity]
+    if category != "All":
+        page_recs = page_recs[page_recs["category"] == category]
+    if team != "All":
+        page_recs = page_recs[page_recs["team"] == team]
+    if owner != "All":
+        page_recs = page_recs[page_recs["owner"] == owner]
+    if status_filter != "All":
+        page_recs = page_recs[page_recs["status"] == status_filter]
+    page_recs = page_recs[page_recs["confidence"] >= min_confidence]
+    sort_ascending = daily_savings_sort == "Low to high"
+
+    render_filter_chips(page_recs)
+    selected_recommendation_id = scrolling_recommendation_table(
+        page_recs,
+        page_size=20,
+        sort_by="projected_daily_savings",
+        ascending=sort_ascending,
+    )
+    render_recommendation_detail(page_recs, selected_recommendation_id)
 
 
 def warehouses_page():
@@ -511,6 +632,52 @@ def savings_realization_page():
     )
 
 
+def scan_control_page_section(credit_price):
+    latest_scan = latest_successful_scan(scan_runs)
+    freshness = scan_freshness(scan_runs, AS_OF_DATE + pd.Timedelta(hours=12), stale_after_hours=24)
+
+    st.subheader("Scan Control")
+    if latest_scan is not None:
+        scan_cost = latest_scan["credits_estimated"] * credit_price
+        monthly_opportunity = recommendations["projected_monthly_savings"].sum()
+        roi = monthly_opportunity / scan_cost if scan_cost else 0
+        cols = st.columns(6)
+        cols[0].metric("Last Full Scan", latest_scan["completed_at"].strftime("%b %d, %I:%M %p"))
+        cols[1].metric("Freshness", freshness["status"])
+        cols[2].metric("Duration", str(latest_scan["completed_at"] - latest_scan["started_at"]).split()[-1])
+        cols[3].metric("Recommendations", f"{latest_scan['recommendations_found']:,.0f}")
+        cols[4].metric("Scan Credits", f"{latest_scan['credits_estimated']:.2f}")
+        cols[5].metric("Scan ROI", f"{roi:,.0f}x", f"{money(scan_cost)} scan cost")
+    else:
+        st.warning("No successful scan exists yet.")
+
+    left, center, right = st.columns([1.1, 1.1, 1])
+    with left:
+        st.selectbox("Schedule", ["Daily", "Weekly", "Monthly", "Off"], index=0)
+        st.time_input("Preferred scan time", value=pd.Timestamp("2026-05-18 08:00").time())
+    with center:
+        st.selectbox("Scan scope", ["Full", "Incremental"], index=0)
+        st.selectbox("Lookback window", ["7 days", "30 days", "90 days", "All available"], index=1)
+    with right:
+        st.selectbox("Next scheduled scan", ["2026-05-19 08:00", "2026-05-20 08:00", "Manual only"], index=0)
+        st.button("Run scan now", type="primary")
+
+    st.caption("POC mode: controls are not connected to Snowflake yet. They model the future scheduled/ad hoc scan workflow.")
+
+    st.subheader("Scan Run History")
+    st.dataframe(
+        scan_runs.sort_values("started_at", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "credits_estimated": st.column_config.NumberColumn("Credits", format="%.2f"),
+            "recommendations_found": st.column_config.NumberColumn("Found", format="%d"),
+            "recommendations_new": st.column_config.NumberColumn("New", format="%d"),
+            "recommendations_updated": st.column_config.NumberColumn("Updated", format="%d"),
+        },
+    )
+
+
 def settings_page():
     st.title("Settings")
     st.caption("POC controls for scan configuration, thresholds, and Snowflake Marketplace packaging assumptions.")
@@ -531,6 +698,8 @@ def settings_page():
         st.toggle("Read-only recommendations", value=True)
         st.toggle("Generate implementation SQL", value=True)
         st.toggle("Allow approved SQL execution", value=False)
+
+    scan_control_page_section(credit_price)
 
     st.subheader("Native App Readiness Checklist")
     readiness = pd.DataFrame(

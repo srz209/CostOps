@@ -48,3 +48,23 @@ def savings_by_period(recommendations, period):
     realized = recommendations["realized_monthly_savings"].sum() * multiplier
     projected = recommendations["projected_monthly_savings"].sum() * multiplier
     return int(realized), int(projected)
+
+
+def latest_successful_scan(scan_runs):
+    successful = scan_runs[scan_runs["status"] == "SUCCEEDED"].sort_values("completed_at", ascending=False)
+    if successful.empty:
+        return None
+    return successful.iloc[0]
+
+
+def scan_freshness(scan_runs, as_of_date, stale_after_hours=24):
+    latest = latest_successful_scan(scan_runs)
+    if latest is None:
+        return {"status": "No successful scan", "hours_since_scan": None, "is_stale": True}
+    hours = (as_of_date - latest["completed_at"]).total_seconds() / 3600
+    is_stale = hours > stale_after_hours
+    return {
+        "status": "Stale" if is_stale else "Fresh",
+        "hours_since_scan": hours,
+        "is_stale": is_stale,
+    }

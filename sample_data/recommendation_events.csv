@@ -19,3 +19,8 @@ EVT-017,REC-005,2026-04-29 08:05:00,DETECTED,system,Detected high-frequency task
 EVT-018,REC-005,2026-05-10 15:15:00,DEFERRED,Morgan Brooks,Deferred until dashboard freshness requirements are confirmed.
 EVT-019,REC-004,2026-05-07 08:05:00,DETECTED,system,Detected high retention on staging object.
 EVT-020,REC-006,2026-05-12 08:05:00,DETECTED,system,Detected unattributed query spend.
+EVT-021,,2026-05-18 08:00:00,SCAN_STARTED,system,Full scheduled scan started with 30-day lookback.
+EVT-022,,2026-05-18 08:07:42,SCAN_COMPLETED,system,Full scheduled scan completed; 8 recommendations found.
+EVT-023,,2026-05-15 14:20:00,SCAN_STARTED,Jordan Lee,Ad hoc full scan started with 90-day lookback.
+EVT-024,,2026-05-15 14:28:49,SCAN_COMPLETED,system,Ad hoc full scan completed; 6 recommendations found.
+EVT-025,,2026-05-13 08:01:04,SCAN_FAILED,system,Scheduled scan failed while reading task history metadata.

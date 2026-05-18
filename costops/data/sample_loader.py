@@ -13,6 +13,7 @@ def load_sample_data():
         parse_dates=["first_seen_at", "last_seen_at", "accepted_at", "implemented_at"],
     )
     recommendation_events = pd.read_csv(SAMPLE_DATA_DIR / "recommendation_events.csv", parse_dates=["event_ts"])
+    scan_runs = pd.read_csv(SAMPLE_DATA_DIR / "scan_runs.csv", parse_dates=["started_at", "completed_at"])
     warehouses = pd.read_csv(SAMPLE_DATA_DIR / "warehouse_daily.csv", parse_dates=["date"])
     workloads = pd.read_csv(SAMPLE_DATA_DIR / "workloads.csv")
     storage = pd.read_csv(SAMPLE_DATA_DIR / "storage_objects.csv")
@@ -20,6 +21,7 @@ def load_sample_data():
     return {
         "recommendations": recommendations,
         "recommendation_events": recommendation_events,
+        "scan_runs": scan_runs,
         "warehouses": warehouses,
         "workloads": workloads,
         "storage": storage,
