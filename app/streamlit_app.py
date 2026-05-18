@@ -153,6 +153,12 @@ st.markdown(
 )
 
 DEFAULT_CREDIT_PRICE = 3.0
+REPORT_COLORS = ["#1f8a5b", "#2e74b5", "#c2410c", "#7a5af8", "#d19a00", "#486581", "#00838f"]
+REPORT_METRIC_COLORS = {
+    "projected_monthly_savings": "#2e74b5",
+    "realized_monthly_savings": "#1f8a5b",
+    "missed_savings": "#c2410c",
+}
 
 
 @st.cache_data
@@ -897,7 +903,12 @@ def build_finance_packet_html(
 
     roi_fig = px.bar(roi_bridge, x="Measure", y="Amount", text="Amount", labels={"Amount": "USD", "Measure": ""})
     roi_fig.update_traces(texttemplate="$%{text:,.0f}", marker_color="#1f8a5b")
-    roi_fig.update_layout(height=360, margin=dict(l=20, r=20, t=30, b=80), xaxis_tickangle=-25)
+    roi_fig.update_layout(
+        height=360,
+        margin=dict(l=20, r=20, t=30, b=80),
+        xaxis_tickangle=-25,
+        template="plotly_white",
+    )
 
     category_chart = category_report.melt(
         "category",
@@ -913,8 +924,9 @@ def build_finance_packet_html(
         orientation="h",
         barmode="group",
         labels={"amount": "USD", "category": ""},
+        color_discrete_map=REPORT_METRIC_COLORS,
     )
-    category_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+    category_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="", template="plotly_white")
 
     team_fig = px.scatter(
         team_report,
@@ -924,8 +936,9 @@ def build_finance_packet_html(
         color="team",
         hover_name="team",
         labels={"projected_monthly_savings": "Projected Monthly Savings", "missed_savings": "Unresolved Missed Savings"},
+        color_discrete_sequence=REPORT_COLORS,
     )
-    team_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+    team_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="", template="plotly_white")
 
     unresolved_fig = px.bar(
         unresolved.head(15).sort_values("missed_savings_to_date"),
@@ -935,8 +948,9 @@ def build_finance_packet_html(
         orientation="h",
         hover_data=["title", "owner", "category", "days_lingering"],
         labels={"missed_savings_to_date": "Missed Savings", "recommendation_id": ""},
+        color_discrete_sequence=REPORT_COLORS,
     )
-    unresolved_fig.update_layout(height=430, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+    unresolved_fig.update_layout(height=430, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="", template="plotly_white")
 
     owner_fig = px.bar(
         owner_report.sort_values("missed_savings", ascending=True),
@@ -946,8 +960,9 @@ def build_finance_packet_html(
         orientation="h",
         hover_data=["open_items", "projected_monthly_savings", "realized_monthly_savings", "avg_days_open"],
         labels={"missed_savings": "Unresolved Missed Savings", "owner": ""},
+        color_discrete_sequence=REPORT_COLORS,
     )
-    owner_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+    owner_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="", template="plotly_white")
 
     scan_fig = px.line(
         scan_report.sort_values("completed_at"),
@@ -958,7 +973,7 @@ def build_finance_packet_html(
     )
     scan_fig.update_traces(line_color="#1f8a5b")
     scan_fig.update_xaxes(tickformat="%b %d")
-    scan_fig.update_layout(height=330, margin=dict(l=20, r=20, t=30, b=30))
+    scan_fig.update_layout(height=330, margin=dict(l=20, r=20, t=30, b=30), template="plotly_white")
 
     money_columns = [
         "projected_monthly_savings",
@@ -976,12 +991,62 @@ def build_finance_packet_html(
         for row in summary_rows.itertuples(index=False)
         if row.Metric not in {"Time range", "Report type"}
     )
+    include_all = report_type == "Comprehensive finance packet"
+    executive_section = ""
+    category_section = ""
+    team_section = ""
+    unresolved_section = ""
+    owner_section = ""
+    scan_section = ""
+
+    if include_all or report_type == "Executive ROI summary":
+        executive_section = f"""
+  <h2>Executive ROI Summary</h2>
+  <div class="metric-grid">{summary_cards}</div>
+  {chart_html(roi_fig)}
+  {format_report_table(summary_rows)}
+"""
+
+    if include_all or report_type == "Savings by category":
+        category_section = f"""
+  <h2>Savings by Category</h2>
+  {chart_html(category_fig)}
+  {format_report_table(category_report.sort_values("projected_monthly_savings", ascending=False), money_columns, ["realization_rate"])}
+"""
+
+    if include_all or report_type == "Savings by team":
+        team_section = f"""
+  <h2>Savings by Team</h2>
+  {chart_html(team_fig)}
+  {format_report_table(team_report.sort_values("missed_savings", ascending=False), money_columns, ["realization_rate"])}
+"""
+
+    if include_all or report_type == "Unresolved opportunity":
+        unresolved_section = f"""
+  <h2>Unresolved Opportunity</h2>
+  {chart_html(unresolved_fig)}
+  {format_report_table(unresolved[["recommendation_id", "title", "category", "team", "owner", "status", "projected_daily_savings", "missed_savings_to_date", "days_lingering"]], money_columns, limit=50)}
+"""
+
+    if include_all or report_type == "Owner accountability":
+        owner_section = f"""
+  <h2>Owner Accountability</h2>
+  {chart_html(owner_fig)}
+  {format_report_table(owner_report.sort_values("missed_savings", ascending=False), money_columns)}
+"""
+
+    if include_all or report_type == "Scan ROI history":
+        scan_section = f"""
+  <h2>Scan ROI History</h2>
+  {chart_html(scan_fig)}
+  {format_report_table(scan_report.sort_values("started_at", ascending=False), money_columns)}
+"""
 
     return f"""<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Cost Savings Finance Packet</title>
+  <title>{escape(report_type.title())}</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>
     body {{ font-family: Arial, sans-serif; color: #172033; margin: 28px; }}
@@ -999,29 +1064,16 @@ def build_finance_packet_html(
   </style>
 </head>
 <body>
-  <h1>Cost Savings Finance Packet</h1>
+  <h1>{escape(report_type.title())}</h1>
   <div class="meta">Generated {escape(generated_ts)} from the current filtered report view.</div>
   <h2>Report Context</h2>
   {format_report_table(filter_rows)}
-  <h2>Executive ROI Summary</h2>
-  <div class="metric-grid">{summary_cards}</div>
-  {chart_html(roi_fig)}
-  {format_report_table(summary_rows)}
-  <h2>Savings by Category</h2>
-  {chart_html(category_fig)}
-  {format_report_table(category_report.sort_values("projected_monthly_savings", ascending=False), money_columns, ["realization_rate"])}
-  <h2>Savings by Team</h2>
-  {chart_html(team_fig)}
-  {format_report_table(team_report.sort_values("missed_savings", ascending=False), money_columns, ["realization_rate"])}
-  <h2>Unresolved Opportunity</h2>
-  {chart_html(unresolved_fig)}
-  {format_report_table(unresolved[["recommendation_id", "title", "category", "team", "owner", "status", "projected_daily_savings", "missed_savings_to_date", "days_lingering"]], money_columns, limit=50)}
-  <h2>Owner Accountability</h2>
-  {chart_html(owner_fig)}
-  {format_report_table(owner_report.sort_values("missed_savings", ascending=False), money_columns)}
-  <h2>Scan ROI History</h2>
-  {chart_html(scan_fig)}
-  {format_report_table(scan_report.sort_values("started_at", ascending=False), money_columns)}
+  {executive_section}
+  {category_section}
+  {team_section}
+  {unresolved_section}
+  {owner_section}
+  {scan_section}
   <h2>Recommendation Backlog Detail</h2>
   {format_report_table(backlog_export, money_columns, limit=200)}
   <h2>Audit Log Evidence</h2>
@@ -1084,20 +1136,6 @@ def reports_page():
     scan_roi = monthly_opportunity / scan_cost if scan_cost else 0
     net_monthly_benefit = monthly_opportunity - scan_cost
 
-    st.markdown(
-        f"""
-        <div class="report-grid">
-            <div class="report-card"><span>{period} Realized Savings</span><strong>{money(realized)}</strong><span>validated benefit</span></div>
-            <div class="report-card"><span>{period} Projected Savings</span><strong>{money(projected)}</strong><span>total opportunity</span></div>
-            <div class="report-card"><span>Annualized Opportunity</span><strong>{money(annualized_opportunity)}</strong><span>based on current findings</span></div>
-            <div class="report-card"><span>Unresolved Missed Savings</span><strong>{money(open_missed)}</strong><span>open items aging</span></div>
-            <div class="report-card"><span>Savings Found per $1 Scan Cost</span><strong>{money(scan_roi)}</strong><span>latest scan estimate</span></div>
-            <div class="report-card"><span>Net Monthly Benefit Found</span><strong>{money(net_monthly_benefit)}</strong><span>opportunity less scan cost</span></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     summary_rows = pd.DataFrame(
         [
             ("Time range", period),
@@ -1125,6 +1163,118 @@ def reports_page():
             ("Net monthly benefit found", net_monthly_benefit),
         ],
         columns=["Measure", "Amount"],
+    )
+    category_report = page_recs.groupby("category", as_index=False).agg(
+        recommendations=("recommendation_id", "count"),
+        open_items=("is_open", "sum"),
+        projected_monthly_savings=("projected_monthly_savings", "sum"),
+        projected_annual_savings=("projected_annual_savings", "sum"),
+        realized_monthly_savings=("realized_monthly_savings", "sum"),
+        missed_savings=("missed_savings_to_date", "sum"),
+        avg_days_open=("days_lingering", "mean"),
+    )
+    category_report["realization_rate"] = (
+        category_report["realized_monthly_savings"] / category_report["projected_monthly_savings"]
+    ).fillna(0)
+    team_report = page_recs.groupby("team", as_index=False).agg(
+        recommendations=("recommendation_id", "count"),
+        open_items=("is_open", "sum"),
+        projected_monthly_savings=("projected_monthly_savings", "sum"),
+        projected_annual_savings=("projected_annual_savings", "sum"),
+        realized_monthly_savings=("realized_monthly_savings", "sum"),
+        missed_savings=("missed_savings_to_date", "sum"),
+        avg_days_open=("days_lingering", "mean"),
+    )
+    team_report["realization_rate"] = (
+        team_report["realized_monthly_savings"] / team_report["projected_monthly_savings"]
+    ).fillna(0)
+    unresolved = page_recs[page_recs["is_open"]].sort_values(
+        ["missed_savings_to_date", "projected_daily_savings"], ascending=False
+    )
+    owner_report = page_recs.groupby(["owner", "team"], as_index=False).agg(
+        recommendations=("recommendation_id", "count"),
+        open_items=("is_open", "sum"),
+        projected_monthly_savings=("projected_monthly_savings", "sum"),
+        realized_monthly_savings=("realized_monthly_savings", "sum"),
+        missed_savings=("missed_savings_to_date", "sum"),
+        avg_days_open=("days_lingering", "mean"),
+    )
+    scan_report = scan_runs.copy()
+    scan_report["scan_cost_usd"] = scan_report["credits_estimated"] * DEFAULT_CREDIT_PRICE
+    scan_report["identified_monthly_savings"] = monthly_opportunity
+    scan_report["savings_per_scan_dollar"] = scan_report["identified_monthly_savings"] / scan_report["scan_cost_usd"]
+    scan_report.loc[scan_report["scan_cost_usd"] == 0, "savings_per_scan_dollar"] = 0
+    backlog_cols = [
+        "recommendation_id",
+        "severity",
+        "category",
+        "subcategory",
+        "title",
+        "owner",
+        "team",
+        "status",
+        "projected_daily_savings",
+        "projected_monthly_savings",
+        "projected_annual_savings",
+        "missed_savings_to_date",
+        "realized_monthly_savings",
+        "days_lingering",
+        "risk",
+        "effort",
+    ]
+    backlog_export = page_recs[backlog_cols].sort_values("missed_savings_to_date", ascending=False)
+    event_view = recommendation_events.merge(
+        recommendations[["recommendation_id", "category", "owner", "team", "title"]],
+        on="recommendation_id",
+        how="left",
+    )
+    if category != "All":
+        event_view = event_view[event_view["category"] == category]
+    if owner != "All":
+        event_view = event_view[event_view["owner"] == owner]
+    if team != "All":
+        event_view = event_view[event_view["team"] == team]
+    finance_packet_html = build_finance_packet_html(
+        report_type,
+        period,
+        {
+            "category": category,
+            "team": team,
+            "owner": owner,
+            "status": status,
+            "severity": severity,
+        },
+        summary_rows,
+        roi_bridge,
+        category_report,
+        team_report,
+        unresolved,
+        owner_report,
+        scan_report,
+        backlog_export,
+        event_view,
+    )
+
+    download_col, spacer_col = st.columns([1.35, 4.65])
+    download_col.download_button(
+        f"Download {report_type}",
+        finance_packet_html,
+        file_name=f"{report_type.lower().replace(' ', '_')}.html",
+        mime="text/html",
+    )
+
+    st.markdown(
+        f"""
+        <div class="report-grid">
+            <div class="report-card"><span>{period} Realized Savings</span><strong>{money(realized)}</strong><span>validated benefit</span></div>
+            <div class="report-card"><span>{period} Projected Savings</span><strong>{money(projected)}</strong><span>total opportunity</span></div>
+            <div class="report-card"><span>Annualized Opportunity</span><strong>{money(annualized_opportunity)}</strong><span>based on current findings</span></div>
+            <div class="report-card"><span>Unresolved Missed Savings</span><strong>{money(open_missed)}</strong><span>open items aging</span></div>
+            <div class="report-card"><span>Savings Found per $1 Scan Cost</span><strong>{money(scan_roi)}</strong><span>latest scan estimate</span></div>
+            <div class="report-card"><span>Net Monthly Benefit Found</span><strong>{money(net_monthly_benefit)}</strong><span>opportunity less scan cost</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     if report_type in {"Comprehensive finance packet", "Executive ROI summary"}:
@@ -1159,19 +1309,6 @@ def reports_page():
                 use_container_width=True,
                 hide_index=True,
             )
-
-    category_report = page_recs.groupby("category", as_index=False).agg(
-        recommendations=("recommendation_id", "count"),
-        open_items=("is_open", "sum"),
-        projected_monthly_savings=("projected_monthly_savings", "sum"),
-        projected_annual_savings=("projected_annual_savings", "sum"),
-        realized_monthly_savings=("realized_monthly_savings", "sum"),
-        missed_savings=("missed_savings_to_date", "sum"),
-        avg_days_open=("days_lingering", "mean"),
-    )
-    category_report["realization_rate"] = (
-        category_report["realized_monthly_savings"] / category_report["projected_monthly_savings"]
-    ).fillna(0)
 
     if report_type in {"Comprehensive finance packet", "Savings by category"}:
         st.subheader("Savings by Category")
@@ -1208,25 +1345,6 @@ def reports_page():
                     "realization_rate": st.column_config.NumberColumn("Realization Rate", format="%.0%"),
                 },
             )
-            st.download_button(
-                "Download category savings",
-                category_report.to_csv(index=False),
-                file_name="savings_by_category.csv",
-                mime="text/csv",
-            )
-
-    team_report = page_recs.groupby("team", as_index=False).agg(
-        recommendations=("recommendation_id", "count"),
-        open_items=("is_open", "sum"),
-        projected_monthly_savings=("projected_monthly_savings", "sum"),
-        projected_annual_savings=("projected_annual_savings", "sum"),
-        realized_monthly_savings=("realized_monthly_savings", "sum"),
-        missed_savings=("missed_savings_to_date", "sum"),
-        avg_days_open=("days_lingering", "mean"),
-    )
-    team_report["realization_rate"] = (
-        team_report["realized_monthly_savings"] / team_report["projected_monthly_savings"]
-    ).fillna(0)
 
     if report_type in {"Comprehensive finance packet", "Savings by team"}:
         st.subheader("Savings by Team")
@@ -1257,16 +1375,7 @@ def reports_page():
                     "realization_rate": st.column_config.NumberColumn("Realization Rate", format="%.0%"),
                 },
             )
-            st.download_button(
-                "Download team savings",
-                team_report.to_csv(index=False),
-                file_name="savings_by_team.csv",
-                mime="text/csv",
-            )
 
-    unresolved = page_recs[page_recs["is_open"]].sort_values(
-        ["missed_savings_to_date", "projected_daily_savings"], ascending=False
-    )
     if report_type in {"Comprehensive finance packet", "Unresolved opportunity"}:
         st.subheader("Unresolved Opportunity")
         st.markdown(
@@ -1314,14 +1423,6 @@ def reports_page():
                 },
             )
 
-    owner_report = page_recs.groupby(["owner", "team"], as_index=False).agg(
-        recommendations=("recommendation_id", "count"),
-        open_items=("is_open", "sum"),
-        projected_monthly_savings=("projected_monthly_savings", "sum"),
-        realized_monthly_savings=("realized_monthly_savings", "sum"),
-        missed_savings=("missed_savings_to_date", "sum"),
-        avg_days_open=("days_lingering", "mean"),
-    )
     if report_type in {"Comprehensive finance packet", "Owner accountability"}:
         st.subheader("Owner Accountability")
         fig = px.bar(
@@ -1346,18 +1447,6 @@ def reports_page():
                 "avg_days_open": st.column_config.NumberColumn("Avg Days Open", format="%.1f"),
             },
         )
-        st.download_button(
-            "Download owner accountability",
-            owner_report.to_csv(index=False),
-            file_name="owner_accountability.csv",
-            mime="text/csv",
-        )
-
-    scan_report = scan_runs.copy()
-    scan_report["scan_cost_usd"] = scan_report["credits_estimated"] * DEFAULT_CREDIT_PRICE
-    scan_report["identified_monthly_savings"] = monthly_opportunity
-    scan_report["savings_per_scan_dollar"] = scan_report["identified_monthly_savings"] / scan_report["scan_cost_usd"]
-    scan_report.loc[scan_report["scan_cost_usd"] == 0, "savings_per_scan_dollar"] = 0
 
     if report_type in {"Comprehensive finance packet", "Scan ROI history"}:
         st.subheader("Scan ROI History")
@@ -1395,98 +1484,8 @@ def reports_page():
                 "savings_per_scan_dollar": st.column_config.NumberColumn("Savings per $1 Scan Cost", format="$%d"),
             },
         )
-        st.download_button(
-            "Download scan ROI history",
-            scan_report.to_csv(index=False),
-            file_name="scan_roi_history.csv",
-            mime="text/csv",
-        )
 
-    st.subheader("Comprehensive Detail Exports")
-    backlog_cols = [
-        "recommendation_id",
-        "severity",
-        "category",
-        "subcategory",
-        "title",
-        "owner",
-        "team",
-        "status",
-        "projected_daily_savings",
-        "projected_monthly_savings",
-        "projected_annual_savings",
-        "missed_savings_to_date",
-        "realized_monthly_savings",
-        "days_lingering",
-        "risk",
-        "effort",
-    ]
-    backlog_export = page_recs[backlog_cols].sort_values("missed_savings_to_date", ascending=False)
-    event_view = recommendation_events.merge(
-        recommendations[["recommendation_id", "category", "owner", "team", "title"]],
-        on="recommendation_id",
-        how="left",
-    )
-    if category != "All":
-        event_view = event_view[event_view["category"] == category]
-    if owner != "All":
-        event_view = event_view[event_view["owner"] == owner]
-    if team != "All":
-        event_view = event_view[event_view["team"] == team]
-
-    finance_packet_html = build_finance_packet_html(
-        report_type,
-        period,
-        {
-            "category": category,
-            "team": team,
-            "owner": owner,
-            "status": status,
-            "severity": severity,
-        },
-        summary_rows,
-        roi_bridge,
-        category_report,
-        team_report,
-        unresolved,
-        owner_report,
-        scan_report,
-        backlog_export,
-        event_view,
-    )
-
-    export_cols = st.columns([1.45, 1, 1, 1, 1])
-    export_cols[0].download_button(
-        "Download finance packet",
-        finance_packet_html,
-        file_name="cost_savings_finance_packet.html",
-        mime="text/html",
-    )
-    export_cols[1].download_button(
-        "Download backlog",
-        backlog_export.to_csv(index=False),
-        file_name="recommendation_backlog_report.csv",
-        mime="text/csv",
-    )
-    export_cols[2].download_button(
-        "Download audit log",
-        event_view.sort_values("event_ts", ascending=False).to_csv(index=False),
-        file_name="recommendation_audit_log.csv",
-        mime="text/csv",
-    )
-    export_cols[3].download_button(
-        "Download team report",
-        team_report.to_csv(index=False),
-        file_name="team_savings_report.csv",
-        mime="text/csv",
-    )
-    export_cols[4].download_button(
-        "Download category report",
-        category_report.to_csv(index=False),
-        file_name="category_savings_report.csv",
-        mime="text/csv",
-    )
-
+    st.subheader("Comprehensive Detail")
     st.dataframe(
         backlog_export,
         use_container_width=True,
