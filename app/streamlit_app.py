@@ -121,6 +121,31 @@ st.markdown(
         font-size: 0.72rem;
         color: #64748b;
     }
+    .report-grid {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 0.55rem;
+        margin: 0.35rem 0 0.8rem 0;
+    }
+    .report-card {
+        border: 1px solid #d8dee9;
+        border-radius: 8px;
+        padding: 0.5rem 0.6rem;
+        background: #ffffff;
+        min-height: 4.1rem;
+    }
+    .report-card strong {
+        display: block;
+        font-size: 1.1rem;
+        line-height: 1.45rem;
+        color: #111827;
+    }
+    .report-card span {
+        display: block;
+        font-size: 0.7rem;
+        color: #64748b;
+        line-height: 0.95rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -193,6 +218,7 @@ with st.sidebar:
             "Tasks",
             "Scan & Schedule",
             "Savings Realization",
+            "Reports",
             "Settings",
         ],
         label_visibility="collapsed",
@@ -820,6 +846,228 @@ def savings_realization_page():
     )
 
 
+def reports_page():
+    st.title("Reports")
+    report_filters = render_recommendation_filter_bar("reports", include_severity=True)
+    period = st.segmented_control("Reporting period", ["MTD", "QTD", "YTD", "Since inception"], default="YTD")
+    page_recs = apply_recommendation_filters(
+        recommendations,
+        status=report_filters["status"],
+        category=report_filters["category"],
+        owner=report_filters["owner"],
+        team=report_filters["team"],
+        min_confidence=report_filters["min_confidence"],
+    )
+    if report_filters["severity"] != "All":
+        page_recs = page_recs[page_recs["severity"] == report_filters["severity"]]
+
+    total_spend = projected_monthly_warehouse_spend(warehouses)
+    realized, projected = savings_by_period(page_recs, period)
+    monthly_opportunity = page_recs["projected_monthly_savings"].sum()
+    open_missed = page_recs.loc[page_recs["is_open"], "missed_savings_to_date"].sum()
+    realized_monthly = page_recs["realized_monthly_savings"].sum()
+    realization_rate = realized_monthly / monthly_opportunity if monthly_opportunity else 0
+    latest_scan = latest_successful_scan(scan_runs)
+    scan_cost = latest_scan["credits_estimated"] * DEFAULT_CREDIT_PRICE if latest_scan is not None else 0
+    scan_roi = monthly_opportunity / scan_cost if scan_cost else 0
+
+    st.markdown(
+        f"""
+        <div class="report-grid">
+            <div class="report-card"><span>Estimated Monthly Spend</span><strong>{money(total_spend)}</strong><span>current projection</span></div>
+            <div class="report-card"><span>{period} Projected Savings</span><strong>{money(projected)}</strong><span>filtered recommendations</span></div>
+            <div class="report-card"><span>{period} Realized Savings</span><strong>{money(realized)}</strong><span>validated savings</span></div>
+            <div class="report-card"><span>Open Missed Savings</span><strong>{money(open_missed)}</strong><span>unresolved backlog</span></div>
+            <div class="report-card"><span>Realization Rate</span><strong>{realization_rate:.0%}</strong><span>realized vs projected monthly</span></div>
+            <div class="report-card"><span>Savings Found per $1 Scan Cost</span><strong>{money(scan_roi)}</strong><span>latest scan estimate</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("Executive Savings Summary")
+    left, center, right = st.columns([1.1, 1, 1])
+    with left:
+        by_category = page_recs.groupby("category", as_index=False).agg(
+            projected=("projected_monthly_savings", "sum"),
+            realized=("realized_monthly_savings", "sum"),
+            missed=("missed_savings_to_date", "sum"),
+        )
+        category_report = by_category.melt("category", var_name="metric", value_name="amount")
+        fig = px.bar(
+            category_report,
+            x="amount",
+            y="category",
+            color="metric",
+            orientation="h",
+            barmode="group",
+            labels={"amount": "USD", "category": ""},
+        )
+        fig.update_layout(height=330, margin=dict(l=10, r=10, t=20, b=10), legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True)
+    with center:
+        status_report = page_recs.groupby("status", as_index=False).agg(
+            monthly_savings=("projected_monthly_savings", "sum"),
+            recommendations=("recommendation_id", "count"),
+        )
+        fig = px.bar(
+            status_report.sort_values("monthly_savings"),
+            x="monthly_savings",
+            y="status",
+            orientation="h",
+            text="monthly_savings",
+            labels={"monthly_savings": "Monthly Savings", "status": ""},
+        )
+        fig.update_traces(texttemplate="$%{text:,.0f}", marker_color="#486581")
+        fig.update_layout(height=330, margin=dict(l=10, r=10, t=20, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+    with right:
+        severity = page_recs.groupby("severity", as_index=False).agg(
+            monthly_savings=("projected_monthly_savings", "sum"),
+            recommendations=("recommendation_id", "count"),
+        )
+        severity["severity"] = pd.Categorical(severity["severity"], severity_order, ordered=True)
+        severity = severity.sort_values("severity")
+        fig = px.bar(
+            severity,
+            x="severity",
+            y="monthly_savings",
+            text="monthly_savings",
+            labels={"monthly_savings": "Monthly Savings", "severity": ""},
+        )
+        fig.update_traces(texttemplate="$%{text:,.0f}", marker_color="#c2410c")
+        fig.update_layout(height=330, margin=dict(l=10, r=10, t=20, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Ownership and Aging")
+    left, right = st.columns([1.1, 1])
+    with left:
+        owner_report = page_recs.groupby(["owner", "team"], as_index=False).agg(
+            projected_monthly_savings=("projected_monthly_savings", "sum"),
+            realized_monthly_savings=("realized_monthly_savings", "sum"),
+            missed_savings=("missed_savings_to_date", "sum"),
+            open_items=("is_open", "sum"),
+        )
+        fig = px.scatter(
+            owner_report,
+            x="projected_monthly_savings",
+            y="missed_savings",
+            size="open_items",
+            color="team",
+            hover_name="owner",
+            labels={"projected_monthly_savings": "Projected Monthly Savings", "missed_savings": "Missed Savings"},
+        )
+        fig.update_layout(height=350, margin=dict(l=10, r=10, t=20, b=10), legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True)
+    with right:
+        aging = page_recs.sort_values(["missed_savings_to_date", "days_lingering"], ascending=False).head(12)
+        fig = px.bar(
+            aging.sort_values("missed_savings_to_date"),
+            x="missed_savings_to_date",
+            y="recommendation_id",
+            color="category",
+            orientation="h",
+            hover_data=["title", "owner", "team", "days_lingering"],
+            labels={"missed_savings_to_date": "Missed Savings", "recommendation_id": ""},
+        )
+        fig.update_layout(height=350, margin=dict(l=10, r=10, t=20, b=10), legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Scan History and ROI")
+    scan_report = scan_runs.copy()
+    scan_report["scan_cost_usd"] = scan_report["credits_estimated"] * DEFAULT_CREDIT_PRICE
+    scan_report["identified_monthly_savings"] = monthly_opportunity
+    scan_report["savings_per_scan_dollar"] = scan_report["identified_monthly_savings"] / scan_report["scan_cost_usd"]
+    scan_report.loc[scan_report["scan_cost_usd"] == 0, "savings_per_scan_dollar"] = 0
+    left, right = st.columns([1.1, 1])
+    with left:
+        fig = px.bar(
+            scan_report.sort_values("completed_at"),
+            x="completed_at",
+            y=["recommendations_new", "recommendations_updated"],
+            labels={"completed_at": "", "value": "Recommendations", "variable": ""},
+        )
+        fig.update_xaxes(tickformat="%b %d")
+        fig.update_layout(height=320, margin=dict(l=10, r=10, t=20, b=10), legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True)
+    with right:
+        fig = px.line(
+            scan_report.sort_values("completed_at"),
+            x="completed_at",
+            y="savings_per_scan_dollar",
+            markers=True,
+            labels={"completed_at": "", "savings_per_scan_dollar": "Savings Found per $1 Scan Cost"},
+        )
+        fig.update_traces(line_color="#1f8a5b")
+        fig.update_xaxes(tickformat="%b %d")
+        fig.update_layout(height=320, margin=dict(l=10, r=10, t=20, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Export-Ready Detail")
+    summary_rows = pd.DataFrame(
+        [
+            ("Estimated monthly spend", total_spend),
+            (f"{period} projected savings", projected),
+            (f"{period} realized savings", realized),
+            ("Open missed savings", open_missed),
+            ("Latest scan cost", scan_cost),
+            ("Savings found per $1 scan cost", scan_roi),
+        ],
+        columns=["Metric", "Value"],
+    )
+    st.dataframe(
+        summary_rows,
+        use_container_width=True,
+        hide_index=True,
+        column_config={"Value": st.column_config.NumberColumn("Value", format="$%d")},
+    )
+
+    backlog_cols = [
+        "recommendation_id",
+        "severity",
+        "category",
+        "subcategory",
+        "title",
+        "owner",
+        "team",
+        "status",
+        "projected_daily_savings",
+        "projected_monthly_savings",
+        "missed_savings_to_date",
+        "realized_monthly_savings",
+        "days_lingering",
+    ]
+    st.dataframe(
+        page_recs[backlog_cols].sort_values("missed_savings_to_date", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "projected_daily_savings": st.column_config.NumberColumn("Daily Savings", format="$%d"),
+            "projected_monthly_savings": st.column_config.NumberColumn("Monthly Savings", format="$%d"),
+            "missed_savings_to_date": st.column_config.NumberColumn("Missed Savings", format="$%d"),
+            "realized_monthly_savings": st.column_config.NumberColumn("Realized Monthly", format="$%d"),
+            "days_lingering": st.column_config.NumberColumn("Days Open", format="%d"),
+        },
+    )
+
+    event_view = recommendation_events.merge(
+        recommendations[["recommendation_id", "category", "owner", "team", "title"]],
+        on="recommendation_id",
+        how="left",
+    )
+    if report_filters["category"] != "All":
+        event_view = event_view[event_view["category"] == report_filters["category"]]
+    if report_filters["owner"] != "All":
+        event_view = event_view[event_view["owner"] == report_filters["owner"]]
+    if report_filters["team"] != "All":
+        event_view = event_view[event_view["team"] == report_filters["team"]]
+    st.dataframe(
+        event_view.sort_values("event_ts", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def scan_control_page_section(credit_price):
     latest_scan = latest_successful_scan(scan_runs)
     freshness = scan_freshness(scan_runs, AS_OF_DATE + pd.Timedelta(hours=12), stale_after_hours=24)
@@ -994,5 +1242,7 @@ elif page == "Scan & Schedule":
     scan_control_page_section(DEFAULT_CREDIT_PRICE)
 elif page == "Savings Realization":
     savings_realization_page()
+elif page == "Reports":
+    reports_page()
 else:
     settings_page()

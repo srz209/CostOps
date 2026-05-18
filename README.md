@@ -56,6 +56,7 @@ In demo mode, recommendation workflow actions are written to `runtime_state/`, w
 - Workload cost drilldowns
 - Storage and task intelligence pages
 - Savings Realization page with period, category, owner, team, realized savings, and audit log filters
+- Reports page with executive savings summary, ownership aging, scan ROI, and export-ready detail tables
 - Settings page with rule catalog and Native App readiness checklist
 - Generated SQL examples for recommended actions
 
