@@ -4,3 +4,5 @@ pandas
 numpy
 snowflake-connector-python
 snowflake-snowpark-python
+xlsxwriter
+reportlab

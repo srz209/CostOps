@@ -1,11 +1,16 @@
 from pathlib import Path
 from html import escape
+from io import BytesIO
 import sys
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -870,6 +875,22 @@ def format_report_table(df, money_cols=None, percent_cols=None, limit=None):
     return display.to_html(index=False, escape=True, classes="report-table")
 
 
+def format_export_frame(df, money_cols=None, percent_cols=None, limit=None):
+    money_cols = set(money_cols or [])
+    percent_cols = set(percent_cols or [])
+    display = df.copy()
+    if limit is not None:
+        display = display.head(limit)
+    for column in display.columns:
+        if column in money_cols:
+            display[column] = display[column].fillna(0).map(lambda value: money(float(value)))
+        elif column in percent_cols:
+            display[column] = display[column].fillna(0).map(lambda value: f"{float(value):.0%}")
+        elif pd.api.types.is_datetime64_any_dtype(display[column]):
+            display[column] = display[column].dt.strftime("%Y-%m-%d %H:%M")
+    return display.fillna("")
+
+
 def chart_html(fig):
     return fig.to_html(full_html=False, include_plotlyjs=False, config={"displayModeBar": False})
 
@@ -878,10 +899,10 @@ def report_timestamp():
     return pd.Timestamp.now(tz="America/New_York")
 
 
-def report_filename(report_type, generated_at):
+def report_filename(report_type, generated_at, extension="html"):
     slug = report_type.lower().replace(" ", "_")
     timestamp = generated_at.strftime("%Y-%m-%d_%H%M")
-    return f"{slug}_{timestamp}.html"
+    return f"{slug}_{timestamp}.{extension}"
 
 
 def executive_report_context(
@@ -1020,6 +1041,169 @@ def executive_report_context(
         )
 
     return narrative, pd.DataFrame(rows, columns=["Metric", "Value"])
+
+
+def report_money_columns():
+    return [
+        "projected_monthly_savings",
+        "projected_annual_savings",
+        "realized_monthly_savings",
+        "missed_savings",
+        "projected_daily_savings",
+        "missed_savings_to_date",
+        "scan_cost_usd",
+        "identified_monthly_savings",
+        "savings_per_scan_dollar",
+    ]
+
+
+def build_excel_report(
+    executive_narrative,
+    summary_rows,
+    category_report,
+    team_report,
+    unresolved,
+    owner_report,
+    scan_report,
+    backlog_export,
+    event_view,
+):
+    money_columns = report_money_columns()
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        workbook = writer.book
+        header_fmt = workbook.add_format({"bold": True, "bg_color": "#E8F1FA", "border": 1})
+        money_fmt = workbook.add_format({"num_format": "$#,##0"})
+
+        pd.DataFrame([{"Executive Summary": executive_narrative}]).to_excel(
+            writer, sheet_name="Executive Summary", index=False, startrow=0
+        )
+        summary_rows.to_excel(writer, sheet_name="Executive Summary", index=False, startrow=3)
+        category_report.to_excel(writer, sheet_name="Category Savings", index=False)
+        team_report.to_excel(writer, sheet_name="Team Savings", index=False)
+        unresolved.to_excel(writer, sheet_name="Unresolved", index=False)
+        owner_report.to_excel(writer, sheet_name="Owner Accountability", index=False)
+        scan_report.to_excel(writer, sheet_name="Scan ROI", index=False)
+        backlog_export.to_excel(writer, sheet_name="Backlog", index=False)
+        event_view.sort_values("event_ts", ascending=False).to_excel(writer, sheet_name="Audit Log", index=False)
+
+        for sheet_name, worksheet in writer.sheets.items():
+            worksheet.freeze_panes(1, 0)
+            worksheet.set_row(0, None, header_fmt)
+            worksheet.set_column(0, 0, 22)
+            worksheet.set_column(1, 20, 18)
+        for sheet_name in writer.sheets:
+            worksheet = writer.sheets[sheet_name]
+            worksheet.autofilter(0, 0, 0, 20)
+            for col_idx in range(0, 20):
+                worksheet.set_column(col_idx, col_idx, 18)
+            if sheet_name != "Executive Summary":
+                worksheet.set_column(0, 0, 24)
+        for sheet_name, df in {
+            "Category Savings": category_report,
+            "Team Savings": team_report,
+            "Unresolved": unresolved,
+            "Owner Accountability": owner_report,
+            "Scan ROI": scan_report,
+            "Backlog": backlog_export,
+        }.items():
+            worksheet = writer.sheets[sheet_name]
+            for idx, column in enumerate(df.columns):
+                if column in money_columns:
+                    worksheet.set_column(idx, idx, 18, money_fmt)
+    output.seek(0)
+    return output.getvalue()
+
+
+def pdf_table(df, money_cols=None, percent_cols=None, limit=20, max_cols=8):
+    display = format_export_frame(df, money_cols, percent_cols, limit=limit)
+    if len(display.columns) > max_cols:
+        display = display.iloc[:, :max_cols]
+    rows = [display.columns.tolist()] + display.astype(str).values.tolist()
+    table = Table(rows, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8F1FA")),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D8DEE9")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ]
+        )
+    )
+    return table
+
+
+def build_pdf_report(
+    report_type,
+    period,
+    generated_at,
+    executive_narrative,
+    summary_rows,
+    category_report,
+    team_report,
+    unresolved,
+    owner_report,
+    scan_report,
+    backlog_export,
+    event_view,
+):
+    money_columns = report_money_columns()
+    output = BytesIO()
+    doc = SimpleDocTemplate(
+        output,
+        pagesize=landscape(letter),
+        rightMargin=24,
+        leftMargin=24,
+        topMargin=24,
+        bottomMargin=24,
+    )
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph(report_type.title(), styles["Title"]),
+        Paragraph(f"Generated {generated_at.strftime('%Y-%m-%d %I:%M %p %Z')}", styles["Normal"]),
+        Spacer(1, 10),
+        Paragraph("Executive Summary", styles["Heading2"]),
+        Paragraph(executive_narrative, styles["BodyText"]),
+        Spacer(1, 8),
+        Paragraph("Executive ROI Summary", styles["Heading2"]),
+        pdf_table(summary_rows, limit=30, max_cols=2),
+        PageBreak(),
+    ]
+
+    include_all = report_type == "Comprehensive finance packet"
+    sections = []
+    if include_all or report_type == "Savings by category":
+        sections.append(("Savings by Category", category_report.sort_values("projected_monthly_savings", ascending=False)))
+    if include_all or report_type == "Savings by team":
+        sections.append(("Savings by Team", team_report.sort_values("missed_savings", ascending=False)))
+    if include_all or report_type == "Unresolved opportunity":
+        sections.append(("Unresolved Opportunity", unresolved))
+    if include_all or report_type == "Owner accountability":
+        sections.append(("Owner Accountability", owner_report.sort_values("missed_savings", ascending=False)))
+    if include_all or report_type == "Scan ROI history":
+        sections.append(("Scan ROI History", scan_report.sort_values("started_at", ascending=False)))
+
+    for title, frame in sections:
+        story.extend([Paragraph(title, styles["Heading2"]), pdf_table(frame, money_columns, ["realization_rate"], limit=25), Spacer(1, 10)])
+
+    story.extend(
+        [
+            PageBreak(),
+            Paragraph("Recommendation Backlog Detail", styles["Heading2"]),
+            pdf_table(backlog_export, money_columns, limit=40),
+            Spacer(1, 10),
+            Paragraph("Audit Log Evidence", styles["Heading2"]),
+            pdf_table(event_view.sort_values("event_ts", ascending=False), limit=40),
+            Spacer(1, 12),
+            Paragraph(f"Downloaded/generated timestamp: {generated_at.strftime('%Y-%m-%d %I:%M %p %Z')}", styles["Normal"]),
+        ]
+    )
+    doc.build(story)
+    output.seek(0)
+    return output.getvalue()
 
 
 def build_finance_packet_html(
@@ -1264,6 +1448,7 @@ def reports_page():
         status = st.selectbox("Status", status_options, key="reports_status")
 
     severity = st.segmented_control("Severity", ["All"] + severity_order, default="All")
+    download_format = st.segmented_control("Download format", ["PDF", "Excel", "HTML"], default="PDF")
     page_recs = apply_recommendation_filters(
         recommendations,
         status=status,
@@ -1392,35 +1577,69 @@ def reports_page():
         scan_report,
     )
     generated_at = report_timestamp()
-    finance_packet_html = build_finance_packet_html(
-        report_type,
-        period,
-        {
-            "category": category,
-            "team": team,
-            "owner": owner,
-            "status": status,
-            "severity": severity,
-        },
-        generated_at,
-        executive_narrative,
-        summary_rows,
-        roi_bridge,
-        category_report,
-        team_report,
-        unresolved,
-        owner_report,
-        scan_report,
-        backlog_export,
-        event_view,
-    )
+    if download_format == "PDF":
+        download_data = build_pdf_report(
+            report_type,
+            period,
+            generated_at,
+            executive_narrative,
+            summary_rows,
+            category_report,
+            team_report,
+            unresolved,
+            owner_report,
+            scan_report,
+            backlog_export,
+            event_view,
+        )
+        download_extension = "pdf"
+        download_mime = "application/pdf"
+    elif download_format == "Excel":
+        download_data = build_excel_report(
+            executive_narrative,
+            summary_rows,
+            category_report,
+            team_report,
+            unresolved,
+            owner_report,
+            scan_report,
+            backlog_export,
+            event_view,
+        )
+        download_extension = "xlsx"
+        download_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        download_data = build_finance_packet_html(
+            report_type,
+            period,
+            {
+                "category": category,
+                "team": team,
+                "owner": owner,
+                "status": status,
+                "severity": severity,
+            },
+            generated_at,
+            executive_narrative,
+            summary_rows,
+            roi_bridge,
+            category_report,
+            team_report,
+            unresolved,
+            owner_report,
+            scan_report,
+            backlog_export,
+            event_view,
+        )
+        download_extension = "html"
+        download_mime = "text/html"
 
     download_col, spacer_col = st.columns([1.35, 4.65])
     download_col.download_button(
-        f"Download {report_type}",
-        finance_packet_html,
-        file_name=report_filename(report_type, generated_at),
-        mime="text/html",
+        f"Download {report_type} ({download_format})",
+        download_data,
+        file_name=report_filename(report_type, generated_at, download_extension),
+        mime=download_mime,
     )
 
     st.markdown(
