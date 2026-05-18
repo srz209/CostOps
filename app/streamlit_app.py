@@ -1503,16 +1503,6 @@ def reports_page():
 
     severity = st.segmented_control("Severity", ["All"] + severity_order, default="All")
     selected_sections = REPORT_PRESETS[report_type]
-    config_cols = st.columns([1.1, 1.1, 3.8])
-    with config_cols[0]:
-        report_detail = st.selectbox(
-            "Report detail",
-            ["Summary only", "Standard detail", "Full detail"],
-            index=1,
-            help="Controls how many recommendation and audit rows are included in the downloaded report.",
-        )
-    with config_cols[1]:
-        download_format = st.radio("Download format", ["PDF", "Excel", "HTML"], horizontal=True, index=0)
     page_recs = apply_recommendation_filters(
         recommendations,
         status=status,
@@ -1640,6 +1630,17 @@ def reports_page():
         owner_report,
         scan_report,
     )
+    action_cols = st.columns([1.15, 1.25, 1.6, 2.0])
+    with action_cols[0]:
+        report_detail = st.selectbox(
+            "Report detail",
+            ["Summary only", "Standard detail", "Full detail"],
+            index=0,
+            help="Controls how many recommendation and audit rows are included in the downloaded report.",
+        )
+    with action_cols[1]:
+        download_format = st.radio("Download format", ["PDF", "Excel", "HTML"], horizontal=True, index=0)
+
     generated_at = report_timestamp()
     if download_format == "PDF":
         download_data = build_pdf_report(
@@ -1705,17 +1706,19 @@ def reports_page():
         download_extension = "html"
         download_mime = "text/html"
 
-    download_col, spacer_col = st.columns([1.35, 4.65])
-    download_col.download_button(
-        f"Download {report_type} ({download_format})",
-        download_data,
-        file_name=report_filename(report_type, generated_at, download_extension),
-        mime=download_mime,
-    )
-    st.caption(
-        f"Included sections: {', '.join(selected_sections) if selected_sections else 'Executive summary only'} | "
-        f"Report detail: {report_detail}"
-    )
+    with action_cols[2]:
+        st.download_button(
+            f"Download {report_type}",
+            download_data,
+            file_name=report_filename(report_type, generated_at, download_extension),
+            mime=download_mime,
+            use_container_width=True,
+        )
+    with action_cols[3]:
+        st.caption(
+            f"Sections: {', '.join(selected_sections) if selected_sections else 'Executive summary only'} | "
+            f"Format: {download_format}"
+        )
 
     st.markdown(
         f"""
