@@ -162,6 +162,16 @@ st.markdown(
     .download-spacer {
         height: 1.75rem;
     }
+    div[data-testid="stDownloadButton"] button {
+        border-radius: 7px;
+        font-weight: 700;
+        min-height: 2.55rem;
+        box-shadow: 0 6px 14px rgba(46, 116, 181, 0.22);
+    }
+    div[data-testid="stDownloadButton"] button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 9px 18px rgba(46, 116, 181, 0.28);
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1646,7 +1656,7 @@ def reports_page():
         owner_report,
         scan_report,
     )
-    action_cols = st.columns([1.15, 1.35, 1.55, 2.1], vertical_alignment="top")
+    action_cols = st.columns([1.15, 1.12, 1.05, 2.9], gap="small", vertical_alignment="top")
     with action_cols[0]:
         report_detail = st.selectbox(
             "Report detail",
@@ -1726,11 +1736,12 @@ def reports_page():
     with action_cols[2]:
         st.markdown('<div class="download-spacer"></div>', unsafe_allow_html=True)
         st.download_button(
-            f"Download {report_type}",
+            "Download report",
             download_data,
             file_name=report_filename(report_type, generated_at, download_extension),
             mime=download_mime,
             use_container_width=True,
+            type="primary",
         )
     with action_cols[3]:
         st.markdown('<div class="download-spacer"></div>', unsafe_allow_html=True)
