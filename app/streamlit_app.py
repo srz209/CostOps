@@ -76,6 +76,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+DEFAULT_CREDIT_PRICE = 3.0
+
 
 @st.cache_data
 def load_data():
@@ -109,6 +111,7 @@ with st.sidebar:
             "Workloads",
             "Storage",
             "Tasks",
+            "Scan & Schedule",
             "Savings Realization",
             "Settings",
         ],
@@ -641,13 +644,13 @@ def scan_control_page_section(credit_price):
         scan_cost = latest_scan["credits_estimated"] * credit_price
         monthly_opportunity = recommendations["projected_monthly_savings"].sum()
         roi = monthly_opportunity / scan_cost if scan_cost else 0
-        cols = st.columns(6)
+        cols = st.columns([1.25, 0.9, 0.85, 0.9, 1.15, 1])
         cols[0].metric("Last Full Scan", latest_scan["completed_at"].strftime("%b %d, %I:%M %p"))
         cols[1].metric("Freshness", freshness["status"])
-        cols[2].metric("Duration", str(latest_scan["completed_at"] - latest_scan["started_at"]).split()[-1])
-        cols[3].metric("Recommendations", f"{latest_scan['recommendations_found']:,.0f}")
-        cols[4].metric("Scan Credits", f"{latest_scan['credits_estimated']:.2f}")
-        cols[5].metric("Scan ROI", f"{roi:,.0f}x", f"{money(scan_cost)} scan cost")
+        cols[2].metric("Scan Credits", f"{latest_scan['credits_estimated']:.2f}", "credits used")
+        cols[3].metric("Scan Cost", money(scan_cost), "estimated")
+        cols[4].metric("Identified Monthly Savings", money(monthly_opportunity), "from latest results")
+        cols[5].metric("Savings Found per $1 Scan Cost", money(roi), "monthly opportunity")
     else:
         st.warning("No successful scan exists yet.")
 
@@ -698,8 +701,6 @@ def settings_page():
         st.toggle("Read-only recommendations", value=True)
         st.toggle("Generate implementation SQL", value=True)
         st.toggle("Allow approved SQL execution", value=False)
-
-    scan_control_page_section(credit_price)
 
     st.subheader("Native App Readiness Checklist")
     readiness = pd.DataFrame(
@@ -752,6 +753,10 @@ elif page == "Storage":
     storage_page()
 elif page == "Tasks":
     tasks_page()
+elif page == "Scan & Schedule":
+    st.title("Scan & Schedule")
+    st.caption("Schedule, run, and review Snowflake environment analysis runs. POC mode uses demo history.")
+    scan_control_page_section(DEFAULT_CREDIT_PRICE)
 elif page == "Savings Realization":
     savings_realization_page()
 else:
