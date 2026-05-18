@@ -17,9 +17,11 @@ streamlit run app/streamlit_app.py
 - Executive cost overview
 - Savings opportunity KPIs
 - Recommendation backlog with severity, confidence, risk, effort, and status
+- Recommendation lifecycle tracking with owner, team, first-seen date, implementation date, aging, and missed savings
 - Warehouse spend and utilization charts
 - Workload cost drilldowns
 - Storage and task intelligence pages
+- Savings Realization page with period, category, owner, team, realized savings, and audit log filters
 - Settings page with rule catalog and Native App readiness checklist
 - Generated SQL examples for recommended actions
 
@@ -35,6 +37,16 @@ costops/
 sample_data/                # CSV data used by the local POC
 sql/                        # Placeholder for future Snowflake SQL assets
 ```
+
+## Recommendation Lifecycle
+
+The POC models recommendations as workflow items rather than static alerts:
+
+```text
+Detected -> Proposed -> Selected / Accepted -> SQL Copied -> Implemented -> Realized
+```
+
+Each recommendation can carry an owner, team, projected daily savings, first-seen date, implementation date, missed-savings estimate, realized-savings estimate, and audit log events.
 
 ## Later Snowflake Native App Direction
 

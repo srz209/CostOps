@@ -12,7 +12,13 @@ if str(ROOT) not in sys.path:
 
 from costops.data.sample_loader import load_sample_data
 from costops.rules.rule_catalog import RULE_CATALOG
-from costops.services.metrics import money, projected_monthly_warehouse_spend, recommendation_summary
+from costops.services.metrics import (
+    enrich_recommendation_lifecycle,
+    money,
+    projected_monthly_warehouse_spend,
+    recommendation_summary,
+    savings_by_period,
+)
 
 
 
@@ -31,7 +37,9 @@ def load_data():
 
 
 data = load_data()
-recommendations = data["recommendations"]
+AS_OF_DATE = pd.Timestamp("2026-05-18")
+recommendations = enrich_recommendation_lifecycle(data["recommendations"], AS_OF_DATE)
+recommendation_events = data["recommendation_events"]
 warehouses = data["warehouses"]
 workloads = data["workloads"]
 storage = data["storage"]
@@ -40,6 +48,8 @@ tasks = data["tasks"]
 severity_order = ["Critical", "High", "Medium", "Low"]
 status_options = ["All"] + sorted(recommendations["status"].unique().tolist())
 category_options = ["All"] + sorted(recommendations["category"].unique().tolist())
+owner_options = ["All"] + sorted(recommendations["owner"].unique().tolist())
+team_options = ["All"] + sorted(recommendations["team"].unique().tolist())
 
 with st.sidebar:
     st.title("Cost Optimization")
@@ -52,7 +62,7 @@ with st.sidebar:
             "Workloads",
             "Storage",
             "Tasks",
-            "Savings Tracker",
+            "Savings Realization",
             "Settings",
         ],
         label_visibility="collapsed",
@@ -60,6 +70,8 @@ with st.sidebar:
     st.divider()
     status_filter = st.selectbox("Status", status_options)
     category_filter = st.selectbox("Category", category_options)
+    owner_filter = st.selectbox("Owner", owner_options)
+    team_filter = st.selectbox("Team", team_options)
     min_confidence = st.slider("Minimum confidence", 0.0, 1.0, 0.65, 0.05)
     st.divider()
     st.caption("POC data mode")
@@ -71,6 +83,10 @@ if status_filter != "All":
     filtered_recs = filtered_recs[filtered_recs["status"] == status_filter]
 if category_filter != "All":
     filtered_recs = filtered_recs[filtered_recs["category"] == category_filter]
+if owner_filter != "All":
+    filtered_recs = filtered_recs[filtered_recs["owner"] == owner_filter]
+if team_filter != "All":
+    filtered_recs = filtered_recs[filtered_recs["team"] == team_filter]
 filtered_recs = filtered_recs[filtered_recs["confidence"] >= min_confidence]
 
 
@@ -81,7 +97,7 @@ def render_kpis():
     cols = st.columns(4)
     cols[0].metric("Estimated Monthly Spend", money(total_spend), "sample-data projection")
     cols[1].metric("Monthly Savings Opportunity", money(summary["monthly_savings"]), "open recommendations")
-    cols[2].metric("Annualized Opportunity", money(summary["annual_savings"]), "projected")
+    cols[2].metric("Realized Monthly Savings", money(summary["realized_monthly_savings"]), "validated")
     cols[3].metric("Critical Findings", f"{summary['critical_count']}", "highest priority")
 
 
@@ -93,8 +109,13 @@ def recommendation_table(df):
             "category",
             "title",
             "object_name",
+            "owner",
+            "team",
             "confidence",
+            "projected_daily_savings",
             "projected_monthly_savings",
+            "missed_savings_to_date",
+            "days_lingering",
             "risk",
             "effort",
             "status",
@@ -106,7 +127,10 @@ def recommendation_table(df):
         hide_index=True,
         column_config={
             "recommendation_id": "ID",
+            "projected_daily_savings": st.column_config.NumberColumn("Daily Savings", format="$%d"),
             "projected_monthly_savings": st.column_config.NumberColumn("Monthly Savings", format="$%d"),
+            "missed_savings_to_date": st.column_config.NumberColumn("Missed Savings", format="$%d"),
+            "days_lingering": st.column_config.NumberColumn("Days Since First Seen", format="%d"),
             "confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1),
         },
     )
@@ -116,9 +140,9 @@ def render_filter_chips(df):
     chips = st.columns(5)
     chips[0].metric("Visible Findings", f"{len(df):,.0f}")
     chips[1].metric("Savings In View", money(df["projected_monthly_savings"].sum()))
-    chips[2].metric("Avg Confidence", f"{df['confidence'].mean():.0%}" if not df.empty else "0%")
-    chips[3].metric("Low Risk", f"{(df['risk'] == 'Low').sum():,.0f}")
-    chips[4].metric("Accepted", f"{(df['status'] == 'Accepted').sum():,.0f}")
+    chips[2].metric("Missed Savings", money(df["missed_savings_to_date"].sum()))
+    chips[3].metric("Avg Age", f"{df['days_lingering'].mean():.0f} days" if not df.empty else "0 days")
+    chips[4].metric("Realized", money(df["realized_monthly_savings"].sum()))
 
 
 def render_recommendation_detail(df):
@@ -135,14 +159,29 @@ def render_recommendation_detail(df):
         detail_cols = st.columns(4)
         detail_cols[0].metric("Severity", rec["severity"])
         detail_cols[1].metric("Monthly Savings", money(rec["projected_monthly_savings"]))
-        detail_cols[2].metric("Risk", rec["risk"])
-        detail_cols[3].metric("Effort", rec["effort"])
-        st.caption(f"Object: {rec['object_name']} | Category: {rec['category']} | Status: {rec['status']}")
+        detail_cols[2].metric("Missed Savings", money(rec["missed_savings_to_date"]))
+        detail_cols[3].metric("Age", f"{rec['days_lingering']} days")
+        st.caption(
+            f"Object: {rec['object_name']} | Category: {rec['category']} / {rec['subcategory']} | "
+            f"Owner: {rec['owner']} | Team: {rec['team']} | Status: {rec['status']}"
+        )
         st.write(rec["evidence"])
         st.text_area("Implementation notes", value="", placeholder="Add validation notes, owner, or implementation decision.", height=90)
     with right:
         st.caption("Generated SQL or implementation guidance")
         st.code(rec["generated_sql"], language="sql")
+        st.caption("Lifecycle")
+        lifecycle = pd.DataFrame(
+            [
+                ("First seen", rec["first_seen_at"].date()),
+                ("Accepted", "" if pd.isna(rec["accepted_at"]) else rec["accepted_at"].date()),
+                ("Implemented", "" if pd.isna(rec["implemented_at"]) else rec["implemented_at"].date()),
+                ("Risk", rec["risk"]),
+                ("Effort", rec["effort"]),
+            ],
+            columns=["Milestone", "Value"],
+        )
+        st.dataframe(lifecycle, use_container_width=True, hide_index=True)
 
 
 def overview():
@@ -356,26 +395,120 @@ def tasks_page():
     )
 
 
-def savings_tracker_page():
-    st.title("Savings Tracker")
-    tracker = recommendations.groupby("status", as_index=False).agg(
+def savings_realization_page():
+    st.title("Savings Realization")
+    period = st.segmented_control("Period", ["MTD", "QTD", "YTD", "Since inception"], default="YTD")
+    realized, projected = savings_by_period(filtered_recs, period)
+    open_missed = filtered_recs.loc[filtered_recs["is_open"], "missed_savings_to_date"].sum()
+
+    cols = st.columns(4)
+    cols[0].metric("Realized Savings", money(realized), period)
+    cols[1].metric("Projected Opportunity", money(projected), period)
+    cols[2].metric("Missed Savings", money(open_missed), "open items")
+    cols[3].metric("Open Recommendations", f"{filtered_recs['is_open'].sum():,.0f}", "filtered view")
+
+    tracker = filtered_recs.groupby("status", as_index=False).agg(
         monthly_savings=("projected_monthly_savings", "sum"),
+        realized_monthly_savings=("realized_monthly_savings", "sum"),
+        missed_savings=("missed_savings_to_date", "sum"),
         annual_savings=("projected_annual_savings", "sum"),
         recommendations=("recommendation_id", "count"),
     )
-    fig = go.Figure(
-        go.Waterfall(
-            name="Savings",
-            orientation="v",
-            measure=["relative"] * len(tracker),
-            x=tracker["status"],
-            text=[money(v) for v in tracker["monthly_savings"]],
-            y=tracker["monthly_savings"],
+
+    left, right = st.columns([1.1, 1])
+    with left:
+        by_category = filtered_recs.groupby("category", as_index=False).agg(
+            projected=("projected_monthly_savings", "sum"),
+            realized=("realized_monthly_savings", "sum"),
+            missed=("missed_savings_to_date", "sum"),
         )
+        melted = by_category.melt("category", var_name="metric", value_name="amount")
+        fig = px.bar(
+            melted,
+            x="category",
+            y="amount",
+            color="metric",
+            barmode="group",
+            labels={"amount": "USD", "category": ""},
+        )
+        fig.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+    with right:
+        by_owner = filtered_recs.groupby(["owner", "team"], as_index=False).agg(
+            projected_monthly_savings=("projected_monthly_savings", "sum"),
+            realized_monthly_savings=("realized_monthly_savings", "sum"),
+            missed_savings=("missed_savings_to_date", "sum"),
+            open_items=("is_open", "sum"),
+        )
+        fig = px.scatter(
+            by_owner,
+            x="projected_monthly_savings",
+            y="missed_savings",
+            size="open_items",
+            color="team",
+            hover_name="owner",
+            labels={"projected_monthly_savings": "Projected Monthly Savings", "missed_savings": "Missed Savings"},
+        )
+        fig.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Savings Lifecycle by Status")
+    st.dataframe(
+        tracker.sort_values("missed_savings", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "monthly_savings": st.column_config.NumberColumn("Projected Monthly", format="$%d"),
+            "realized_monthly_savings": st.column_config.NumberColumn("Realized Monthly", format="$%d"),
+            "missed_savings": st.column_config.NumberColumn("Missed Savings", format="$%d"),
+            "annual_savings": st.column_config.NumberColumn("Projected Annual", format="$%d"),
+        },
     )
-    fig.update_layout(height=380, yaxis_title="Projected Monthly Savings", margin=dict(l=10, r=10, t=20, b=10))
-    st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(tracker, use_container_width=True, hide_index=True)
+
+    st.subheader("Aging and Ownership Queue")
+    queue_cols = [
+        "recommendation_id",
+        "category",
+        "subcategory",
+        "title",
+        "owner",
+        "team",
+        "status",
+        "first_seen_at",
+        "days_lingering",
+        "projected_daily_savings",
+        "missed_savings_to_date",
+        "realized_monthly_savings",
+    ]
+    st.dataframe(
+        filtered_recs[queue_cols].sort_values(["missed_savings_to_date", "days_lingering"], ascending=False),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "projected_daily_savings": st.column_config.NumberColumn("Daily Savings", format="$%d"),
+            "missed_savings_to_date": st.column_config.NumberColumn("Missed Savings", format="$%d"),
+            "realized_monthly_savings": st.column_config.NumberColumn("Realized Monthly", format="$%d"),
+            "days_lingering": st.column_config.NumberColumn("Days Open", format="%d"),
+        },
+    )
+
+    st.subheader("Audit Log")
+    event_view = recommendation_events.merge(
+        recommendations[["recommendation_id", "category", "owner", "team", "title"]],
+        on="recommendation_id",
+        how="left",
+    )
+    if category_filter != "All":
+        event_view = event_view[event_view["category"] == category_filter]
+    if owner_filter != "All":
+        event_view = event_view[event_view["owner"] == owner_filter]
+    if team_filter != "All":
+        event_view = event_view[event_view["team"] == team_filter]
+    st.dataframe(
+        event_view.sort_values("event_ts", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def settings_page():
@@ -450,7 +583,7 @@ elif page == "Storage":
     storage_page()
 elif page == "Tasks":
     tasks_page()
-elif page == "Savings Tracker":
-    savings_tracker_page()
+elif page == "Savings Realization":
+    savings_realization_page()
 else:
     settings_page()
