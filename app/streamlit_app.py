@@ -1651,7 +1651,7 @@ def reports_page():
         report_detail = st.selectbox(
             "Report detail",
             ["Summary only", "Standard detail", "Full detail"],
-            index=0,
+            index=2,
         )
         st.markdown('<div class="control-help">Amount of recommendation and audit detail included.</div>', unsafe_allow_html=True)
     with action_cols[1]:
