@@ -152,6 +152,16 @@ st.markdown(
         color: #64748b;
         line-height: 0.95rem;
     }
+    .control-help {
+        color: #64748b;
+        font-size: 0.72rem;
+        line-height: 1rem;
+        margin-top: -0.45rem;
+        margin-bottom: 0.25rem;
+    }
+    .download-spacer {
+        height: 1.75rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1630,16 +1640,17 @@ def reports_page():
         owner_report,
         scan_report,
     )
-    action_cols = st.columns([1.15, 1.25, 1.6, 2.0])
+    action_cols = st.columns([1.15, 1.35, 1.55, 2.1], vertical_alignment="top")
     with action_cols[0]:
         report_detail = st.selectbox(
             "Report detail",
             ["Summary only", "Standard detail", "Full detail"],
             index=0,
-            help="Controls how many recommendation and audit rows are included in the downloaded report.",
         )
+        st.markdown('<div class="control-help">Amount of recommendation and audit detail included.</div>', unsafe_allow_html=True)
     with action_cols[1]:
         download_format = st.radio("Download format", ["PDF", "Excel", "HTML"], horizontal=True, index=0)
+        st.markdown('<div class="control-help">Choose the file type for this report.</div>', unsafe_allow_html=True)
 
     generated_at = report_timestamp()
     if download_format == "PDF":
@@ -1707,6 +1718,7 @@ def reports_page():
         download_mime = "text/html"
 
     with action_cols[2]:
+        st.markdown('<div class="download-spacer"></div>', unsafe_allow_html=True)
         st.download_button(
             f"Download {report_type}",
             download_data,
