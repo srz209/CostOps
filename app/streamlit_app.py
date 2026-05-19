@@ -258,7 +258,8 @@ storage = data["storage"]
 tasks = data["tasks"]
 
 severity_order = ["Critical", "High", "Medium", "Low"]
-status_options = ["All"] + sorted(recommendations["status"].unique().tolist())
+status_order = ["Proposed", "Selected", "Accepted", "Deferred", "Rejected", "Implemented", "Realized"]
+status_options = ["All"] + [status for status in status_order if status in recommendations["status"].unique().tolist()]
 category_options = ["All"] + sorted(recommendations["category"].unique().tolist())
 owner_options = ["All"] + sorted(recommendations["owner"].unique().tolist())
 team_options = ["All"] + sorted(recommendations["team"].unique().tolist())
@@ -477,93 +478,100 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
             unsafe_allow_html=True,
         )
         st.write(rec["evidence"])
-        assignment_cols = st.columns([1.05, 1.05, 1.05, 0.9])
-        owner_choices = sorted(recommendations["owner"].dropna().unique().tolist())
-        team_choices = sorted(recommendations["team"].dropna().unique().tolist())
-        role_choices = sorted(recommendations["role"].dropna().unique().tolist())
-        assigned_owner = assignment_cols[0].selectbox(
-            "Owner",
-            owner_choices,
-            index=owner_choices.index(rec["owner"]),
-            key=f"{selected_recommendation_id}_owner",
-        )
-        assigned_team = assignment_cols[1].selectbox(
-            "Team",
-            team_choices,
-            index=team_choices.index(rec["team"]),
-            key=f"{selected_recommendation_id}_team",
-        )
-        assigned_role = assignment_cols[2].selectbox(
-            "Role",
-            role_choices,
-            index=role_choices.index(rec["role"]),
-            key=f"{selected_recommendation_id}_role",
-        )
-        due_date = assignment_cols[3].date_input(
-            "Due date",
-            value=pd.Timestamp(rec["due_date"]).date(),
-            key=f"{selected_recommendation_id}_due_date",
-            disabled=not has_permission("assign"),
-        )
-        notes = st.text_area(
-            "Ownership notes",
-            value=rec.get("work_notes", ""),
-            placeholder="Add handoff context, dependency notes, or owner commitments.",
-            height=80,
-            key=f"{selected_recommendation_id}_notes",
-            disabled=not has_permission("assign"),
-        )
-        assignment_action_cols = st.columns([1, 2.2])
-        if assignment_action_cols[0].button(
-            "Save ownership",
-            key=f"{selected_recommendation_id}_save_assignment",
-            type="primary",
-            disabled=not has_permission("assign"),
-        ):
-            update_recommendation_assignment(
-                st.session_state,
-                selected_recommendation_id,
-                assigned_owner,
-                assigned_team,
-                assigned_role,
-                due_date,
-                notes,
-                assigned_owner,
-                AS_OF_DATE,
+        with st.container(border=True):
+            st.caption("Assignment")
+            assignment_cols = st.columns([1.05, 1.05, 1.05, 0.9])
+            owner_choices = sorted(recommendations["owner"].dropna().unique().tolist())
+            team_choices = sorted(recommendations["team"].dropna().unique().tolist())
+            role_choices = sorted(recommendations["role"].dropna().unique().tolist())
+            assigned_owner = assignment_cols[0].selectbox(
+                "Owner",
+                owner_choices,
+                index=owner_choices.index(rec["owner"]),
+                key=f"{selected_recommendation_id}_owner",
             )
-            st.toast(f"{selected_recommendation_id} ownership updated.")
-            st.rerun()
-        assignment_action_cols[1].caption(
-            "Use ownership to route work by person, team, or role. Saved notes stay attached to the recommendation."
-        )
-        if not has_permission("assign"):
-            st.caption("Viewer access: ownership changes are disabled for this session role.")
-        action_cols = st.columns(6)
-        action_labels = [
-            ("Select", "Selected"),
-            ("Accept", "Accepted"),
-            ("Defer", "Deferred"),
-            ("Reject", "Rejected"),
-            ("Implemented", "Implemented"),
-            ("Realized", "Realized"),
-        ]
-        for col, (label, status) in zip(action_cols, action_labels):
-            disabled = rec["status"] == status
-            if col.button(
-                label,
-                disabled=disabled or not has_permission("operate"),
-                key=f"{selected_recommendation_id}_{status}",
+            assigned_team = assignment_cols[1].selectbox(
+                "Team",
+                team_choices,
+                index=team_choices.index(rec["team"]),
+                key=f"{selected_recommendation_id}_team",
+            )
+            assigned_role = assignment_cols[2].selectbox(
+                "Role",
+                role_choices,
+                index=role_choices.index(rec["role"]),
+                key=f"{selected_recommendation_id}_role",
+            )
+            due_date = assignment_cols[3].date_input(
+                "Due date",
+                value=pd.Timestamp(rec["due_date"]).date(),
+                key=f"{selected_recommendation_id}_due_date",
+                disabled=not has_permission("assign"),
+            )
+            notes = st.text_area(
+                "Assignment notes",
+                value=rec.get("work_notes", ""),
+                placeholder="Add handoff context, dependency notes, or owner commitments.",
+                height=80,
+                key=f"{selected_recommendation_id}_notes",
+                disabled=not has_permission("assign"),
+            )
+            assignment_action_cols = st.columns([1, 2.2])
+            if assignment_action_cols[0].button(
+                "Assign ownership",
+                key=f"{selected_recommendation_id}_save_assignment",
+                type="primary",
+                disabled=not has_permission("assign"),
             ):
-                update_recommendation_status(
+                update_recommendation_assignment(
                     st.session_state,
                     selected_recommendation_id,
-                    status,
                     assigned_owner,
+                    assigned_team,
+                    assigned_role,
+                    due_date,
                     notes,
+                    assigned_owner,
                     AS_OF_DATE,
                 )
-                st.toast(f"{selected_recommendation_id} moved to {status}.")
+                st.toast(f"{selected_recommendation_id} ownership updated.")
                 st.rerun()
+            assignment_action_cols[1].caption(
+                "Assign the owner, team, role, and due date for this recommendation."
+            )
+            if not has_permission("assign"):
+                st.caption("Viewer access: assignment changes are disabled for this session role.")
+
+        with st.container(border=True):
+            st.caption("Workflow stage")
+            st.caption("Proposed -> Selected -> Accepted -> Implemented -> Realized")
+            st.caption("Selected means the recommendation is pulled into the active work queue. Accepted means the team approved it for implementation.")
+            action_cols = st.columns(6)
+            action_labels = [
+                ("Select", "Selected"),
+                ("Accept", "Accepted"),
+                ("Defer", "Deferred"),
+                ("Reject", "Rejected"),
+                ("Implemented", "Implemented"),
+                ("Realized", "Realized"),
+            ]
+            for col, (label, status) in zip(action_cols, action_labels):
+                disabled = rec["status"] == status
+                if col.button(
+                    label,
+                    disabled=disabled or not has_permission("operate"),
+                    key=f"{selected_recommendation_id}_{status}",
+                ):
+                    update_recommendation_status(
+                        st.session_state,
+                        selected_recommendation_id,
+                        status,
+                        assigned_owner,
+                        notes,
+                        AS_OF_DATE,
+                    )
+                    st.toast(f"{selected_recommendation_id} moved to {status}.")
+                    st.rerun()
     with right:
         st.caption("Generated SQL or implementation guidance")
         st.code(rec["generated_sql"], language="sql")
