@@ -177,6 +177,54 @@ st.markdown(
         transform: translateY(-1px);
         box-shadow: 0 9px 18px rgba(46, 116, 181, 0.28);
     }
+    .workflow-ribbon {
+        display: flex;
+        gap: 0;
+        margin: 0.15rem 0 0.55rem 0;
+        overflow: hidden;
+        border-radius: 10px;
+    }
+    .workflow-step {
+        position: relative;
+        flex: 1 1 0;
+        padding: 0.65rem 0.85rem 0.65rem 1.15rem;
+        font-size: 0.78rem;
+        font-weight: 700;
+        color: #475569;
+        background: #e5e7eb;
+        clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 50%, calc(100% - 18px) 100%, 0 100%, 18px 50%);
+        margin-left: -12px;
+        white-space: nowrap;
+        text-align: center;
+    }
+    .workflow-step:first-child {
+        margin-left: 0;
+        clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 50%, calc(100% - 18px) 100%, 0 100%);
+        padding-left: 0.85rem;
+    }
+    .workflow-step.complete {
+        background: #d8f3e6;
+        color: #0f5132;
+    }
+    .workflow-step.active {
+        background: #ffedd5;
+        color: #9a3412;
+    }
+    .workflow-step.pending {
+        background: #e5e7eb;
+        color: #64748b;
+    }
+    .workflow-outcome {
+        display: inline-block;
+        margin: 0.15rem 0 0.5rem 0;
+        padding: 0.22rem 0.55rem;
+        border-radius: 999px;
+        font-size: 0.74rem;
+        font-weight: 700;
+        background: #fef3c7;
+        color: #92400e;
+        border: 1px solid #fcd34d;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -453,6 +501,22 @@ def render_filter_chips(df):
     )
 
 
+def render_workflow_ribbon(status):
+    stages = ["Proposed", "Selected", "Accepted", "Implemented", "Realized"]
+    fallback_stage = {"Deferred": "Selected", "Rejected": "Accepted"}
+    active_stage = fallback_stage.get(status, status if status in stages else "Proposed")
+    active_index = stages.index(active_stage)
+
+    parts = ['<div class="workflow-ribbon">']
+    for idx, stage in enumerate(stages):
+        step_class = "complete" if idx < active_index else "active" if idx == active_index else "pending"
+        parts.append(f'<div class="workflow-step {step_class}">{stage}</div>')
+    parts.append("</div>")
+    if status in {"Deferred", "Rejected"}:
+        parts.append(f'<div class="workflow-outcome">Current outcome: {status}</div>')
+    return "".join(parts)
+
+
 def render_recommendation_detail(df, selected_recommendation_id=None):
     if df.empty or selected_recommendation_id is None:
         st.info("No recommendations match the current filters.")
@@ -544,16 +608,16 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
 
         with st.container(border=True):
             st.caption("Workflow stage")
-            st.caption("Proposed -> Selected -> Accepted -> Implemented -> Realized")
-            st.caption("Selected means the recommendation is pulled into the active work queue. Accepted means the team approved it for implementation.")
-            action_cols = st.columns(6)
+            st.markdown(render_workflow_ribbon(rec["status"]), unsafe_allow_html=True)
+            st.caption("Selected means the recommendation is in the active queue. Accepted means the team approved it for implementation.")
+            action_cols = st.columns([1, 1, 1, 1, 1.15, 1.15])
             action_labels = [
                 ("Select", "Selected"),
                 ("Accept", "Accepted"),
                 ("Defer", "Deferred"),
                 ("Reject", "Rejected"),
-                ("Implemented", "Implemented"),
-                ("Realized", "Realized"),
+                ("Implement", "Implemented"),
+                ("Realize", "Realized"),
             ]
             for col, (label, status) in zip(action_cols, action_labels):
                 disabled = rec["status"] == status
