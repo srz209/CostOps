@@ -35,13 +35,36 @@ DEFAULT_APP_SETTINGS = {
     "due_days_high": 14,
     "due_days_medium": 30,
     "due_days_low": 45,
+    "teams": [
+        "Unassigned",
+        "Analytics Engineering",
+        "Business Intelligence",
+        "Data Engineering",
+        "Data Governance",
+        "Data Platform",
+    ],
+    "business_roles": [
+        "Analytics Engineer",
+        "BI Lead",
+        "Data Engineer",
+        "Data Engineering Manager",
+        "FinOps Analyst",
+        "Governance Lead",
+        "Platform Architect",
+        "Platform Engineer",
+    ],
+    "application_roles": [
+        "CostOps Admin",
+        "CostOps Operator",
+        "CostOps Viewer",
+    ],
     "user_directory": [
-        {"owner": "Jordan Lee", "team": "Data Platform", "role": "Platform Architect"},
-        {"owner": "Sam Rivera", "team": "Data Platform", "role": "Platform Engineer"},
-        {"owner": "Avery Patel", "team": "Data Engineering", "role": "Data Engineer"},
-        {"owner": "Riley Chen", "team": "Analytics Engineering", "role": "Analytics Engineer"},
-        {"owner": "Morgan Brooks", "team": "Business Intelligence", "role": "BI Lead"},
-        {"owner": "Casey Nguyen", "team": "Data Governance", "role": "Governance Lead"},
+        {"owner": "Jordan Lee", "team": "Data Platform", "role": "Platform Architect", "email": "", "access_role": "CostOps Admin"},
+        {"owner": "Sam Rivera", "team": "Data Platform", "role": "Platform Engineer", "email": "", "access_role": "CostOps Operator"},
+        {"owner": "Avery Patel", "team": "Data Engineering", "role": "Data Engineer", "email": "", "access_role": "CostOps Operator"},
+        {"owner": "Riley Chen", "team": "Analytics Engineering", "role": "Analytics Engineer", "email": "", "access_role": "CostOps Operator"},
+        {"owner": "Morgan Brooks", "team": "Business Intelligence", "role": "BI Lead", "email": "", "access_role": "CostOps Viewer"},
+        {"owner": "Casey Nguyen", "team": "Data Governance", "role": "Governance Lead", "email": "", "access_role": "CostOps Viewer"},
     ],
 }
 
@@ -88,14 +111,51 @@ def due_days_by_severity(settings=None):
     }
 
 
+def team_catalog(settings=None):
+    settings = settings or load_app_settings()
+    teams = settings.get("teams", []) or DEFAULT_APP_SETTINGS["teams"]
+    return sorted(dict.fromkeys(["Unassigned", *teams]))
+
+
+def business_role_catalog(settings=None):
+    settings = settings or load_app_settings()
+    roles = settings.get("business_roles", []) or DEFAULT_APP_SETTINGS["business_roles"]
+    return sorted(dict.fromkeys(roles))
+
+
+def application_role_catalog(settings=None):
+    settings = settings or load_app_settings()
+    roles = settings.get("application_roles", []) or DEFAULT_APP_SETTINGS["application_roles"]
+    return [role for role in DEFAULT_APP_SETTINGS["application_roles"] if role in roles] or DEFAULT_APP_SETTINGS["application_roles"]
+
+
 def user_directory_frame(settings=None):
     settings = settings or load_app_settings()
     directory = settings.get("user_directory", [])
     if not directory:
         directory = DEFAULT_APP_SETTINGS["user_directory"]
-    return directory
+    normalized = []
+    for entry in directory:
+        normalized.append(
+            {
+                "owner": entry.get("owner", ""),
+                "team": entry.get("team", ""),
+                "role": entry.get("role", "Contributor"),
+                "email": entry.get("email", ""),
+                "access_role": entry.get("access_role", "CostOps Viewer"),
+            }
+        )
+    return normalized
 
 
 def user_lookup_map(settings=None):
     directory = user_directory_frame(settings)
-    return {entry["owner"]: {"team": entry["team"], "role": entry["role"]} for entry in directory}
+    return {
+        entry["owner"]: {
+            "team": entry["team"],
+            "role": entry["role"],
+            "email": entry["email"],
+            "access_role": entry["access_role"],
+        }
+        for entry in directory
+    }

@@ -17,9 +17,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from costops.data.app_settings_store import (
+    application_role_catalog,
+    business_role_catalog,
     current_app_settings,
     initialize_app_settings,
     persist_app_settings,
+    team_catalog,
     user_directory_frame,
     user_lookup_map,
 )
@@ -246,8 +249,10 @@ REPORT_METRIC_COLORS = {
 REPORT_SECTION_OPTIONS = [
     "Savings by category",
     "Savings by team",
+    "Recommendation lifecycle",
     "Unresolved opportunity",
     "Owner accountability",
+    "Users and roles",
     "Scan ROI history",
 ]
 REPORT_PRESETS = {
@@ -255,10 +260,12 @@ REPORT_PRESETS = {
     "Executive ROI summary": [],
     "Savings by team": ["Savings by team", "Unresolved opportunity"],
     "Savings by category": ["Savings by category", "Unresolved opportunity"],
+    "Recommendation lifecycle": ["Recommendation lifecycle", "Unresolved opportunity"],
     "Unresolved opportunity": ["Unresolved opportunity", "Owner accountability"],
-    "Owner accountability": ["Owner accountability", "Unresolved opportunity"],
+    "Owner accountability": ["Owner accountability", "Users and roles"],
+    "Users and roles": ["Users and roles", "Owner accountability"],
     "Scan ROI history": ["Scan ROI history"],
-    "Custom report": ["Savings by category", "Savings by team"],
+    "Custom report": ["Savings by category", "Savings by team", "Recommendation lifecycle", "Users and roles"],
 }
 REPORT_DETAIL_LIMITS = {
     "Summary only": {"backlog": 10, "audit": 10, "section": 10},
@@ -1193,8 +1200,12 @@ def executive_report_context(
     realized_monthly,
     category_report,
     team_report,
+    lifecycle_report,
     unresolved,
     owner_report,
+    directory_report,
+    team_coverage_report,
+    access_role_report,
     scan_report,
 ):
     rows = [
@@ -1286,6 +1297,58 @@ def executive_report_context(
             f"largest unresolved missed savings at {money(top_owner['missed_savings'])}, while {top_realized['owner']} "
             f"has the highest realized monthly savings at {money(top_realized['realized_monthly_savings'])}."
         )
+    elif report_type == "Recommendation lifecycle" and not lifecycle_report.empty:
+        top_status = lifecycle_report.sort_values("projected_monthly_savings", ascending=False).iloc[0]
+        highest_missed_status = lifecycle_report.sort_values("missed_savings", ascending=False).iloc[0]
+        rows.extend(
+            [
+                ("Largest lifecycle opportunity", f"{top_status['status']} - {money(top_status['projected_monthly_savings'])}/mo"),
+                ("Highest missed-savings stage", f"{highest_missed_status['status']} - {money(highest_missed_status['missed_savings'])} missed"),
+                ("Lifecycle stages represented", f"{int(lifecycle_report['recommendations'].gt(0).sum()):,}"),
+            ]
+        )
+        narrative = (
+            f"The recommendation lifecycle report shows where savings are getting stuck in the workflow. "
+            f"{top_status['status']} holds the largest monthly opportunity at {money(top_status['projected_monthly_savings'])}, "
+            f"while {highest_missed_status['status']} carries the highest missed savings at "
+            f"{money(highest_missed_status['missed_savings'])}."
+        )
+    elif report_type == "Users and roles":
+        defined_users = int(directory_report["owner"].nunique()) if not directory_report.empty else 0
+        defined_teams = int(team_coverage_report["team"].nunique()) if not team_coverage_report.empty else 0
+        largest_team = (
+            team_coverage_report.sort_values("assigned_users", ascending=False).iloc[0]
+            if not team_coverage_report.empty
+            else None
+        )
+        dominant_access = (
+            access_role_report.sort_values("users", ascending=False).iloc[0]
+            if not access_role_report.empty
+            else None
+        )
+        rows.extend(
+            [
+                ("Defined users", f"{defined_users:,}"),
+                ("Defined teams", f"{defined_teams:,}"),
+                (
+                    "Largest staffed team",
+                    "None"
+                    if largest_team is None
+                    else f"{largest_team['team']} - {int(largest_team['assigned_users']):,} users",
+                ),
+                (
+                    "Most common access role",
+                    "None"
+                    if dominant_access is None
+                    else f"{dominant_access['access_role']} - {int(dominant_access['users']):,} users",
+                ),
+            ]
+        )
+        narrative = (
+            f"The users and roles report summarizes ownership coverage behind the recommendation engine. "
+            f"The current directory includes {defined_users:,} users across {defined_teams:,} teams. "
+            f"{'No teams are staffed yet.' if largest_team is None else f'{largest_team["team"]} is the largest staffed team with {int(largest_team["assigned_users"]):,} users.'}"
+        )
     elif report_type == "Scan ROI history":
         successful_scans = int((scan_report["status"] == "SUCCEEDED").sum()) if "status" in scan_report else len(scan_report)
         avg_scan_cost = scan_report["scan_cost_usd"].mean() if not scan_report.empty else 0
@@ -1334,8 +1397,12 @@ def build_excel_report(
     summary_rows,
     category_report,
     team_report,
+    lifecycle_report,
     unresolved,
     owner_report,
+    directory_report,
+    team_coverage_report,
+    access_role_report,
     scan_report,
     backlog_export,
     event_view,
@@ -1366,10 +1433,16 @@ def build_excel_report(
             category_report.to_excel(writer, sheet_name="Category Savings", index=False)
         if "Savings by team" in selected_sections:
             team_report.to_excel(writer, sheet_name="Team Savings", index=False)
+        if "Recommendation lifecycle" in selected_sections:
+            lifecycle_report.to_excel(writer, sheet_name="Lifecycle", index=False)
         if "Unresolved opportunity" in selected_sections:
             unresolved.head(limits["section"]).to_excel(writer, sheet_name="Unresolved", index=False)
         if "Owner accountability" in selected_sections:
             owner_report.to_excel(writer, sheet_name="Owner Accountability", index=False)
+        if "Users and roles" in selected_sections:
+            team_coverage_report.to_excel(writer, sheet_name="Team Coverage", index=False)
+            directory_report.to_excel(writer, sheet_name="User Directory", index=False)
+            access_role_report.to_excel(writer, sheet_name="Access Roles", index=False)
         if "Scan ROI history" in selected_sections:
             scan_report.to_excel(writer, sheet_name="Scan ROI", index=False)
         backlog_export.head(limits["backlog"]).to_excel(writer, sheet_name="Backlog", index=False)
@@ -1392,8 +1465,12 @@ def build_excel_report(
         for sheet_name, df in {
             "Category Savings": category_report,
             "Team Savings": team_report,
+            "Lifecycle": lifecycle_report,
             "Unresolved": unresolved,
             "Owner Accountability": owner_report,
+            "Team Coverage": team_coverage_report,
+            "User Directory": directory_report,
+            "Access Roles": access_role_report,
             "Scan ROI": scan_report,
             "Backlog": backlog_export,
         }.items():
@@ -1436,8 +1513,12 @@ def build_pdf_report(
     summary_rows,
     category_report,
     team_report,
+    lifecycle_report,
     unresolved,
     owner_report,
+    directory_report,
+    team_coverage_report,
+    access_role_report,
     scan_report,
     backlog_export,
     event_view,
@@ -1472,6 +1553,8 @@ def build_pdf_report(
         sections.append(("Savings by Category", category_report.sort_values("projected_monthly_savings", ascending=False)))
     if "Savings by team" in selected_sections:
         sections.append(("Savings by Team", team_report.sort_values("missed_savings", ascending=False)))
+    if "Recommendation lifecycle" in selected_sections:
+        sections.append(("Recommendation Lifecycle", lifecycle_report))
     if "Unresolved opportunity" in selected_sections:
         sections.append(("Unresolved Opportunity", unresolved))
     if "Owner accountability" in selected_sections:
@@ -1479,7 +1562,9 @@ def build_pdf_report(
     if "Scan ROI history" in selected_sections:
         sections.append(("Scan ROI History", scan_report.sort_values("started_at", ascending=False)))
 
-    if sections:
+    include_users_roles = "Users and roles" in selected_sections
+
+    if sections or include_users_roles:
         story.append(PageBreak())
 
     for title, frame in sections:
@@ -1491,7 +1576,23 @@ def build_pdf_report(
             ]
         )
 
-    if sections:
+    if include_users_roles:
+        story.extend(
+            [
+                Paragraph("Users and Roles", styles["Heading2"]),
+                Paragraph("Team Coverage", styles["Heading3"]),
+                pdf_table(team_coverage_report, money_columns, limit=limits["section"]),
+                Spacer(1, 8),
+                Paragraph("User Directory", styles["Heading3"]),
+                pdf_table(directory_report, limit=limits["section"], max_cols=5),
+                Spacer(1, 8),
+                Paragraph("Access Role Coverage", styles["Heading3"]),
+                pdf_table(access_role_report, limit=limits["section"], max_cols=2),
+                Spacer(1, 10),
+            ]
+        )
+
+    if sections or include_users_roles:
         story.append(PageBreak())
     else:
         story.append(Spacer(1, 12))
@@ -1522,8 +1623,12 @@ def build_finance_packet_html(
     roi_bridge,
     category_report,
     team_report,
+    lifecycle_report,
     unresolved,
     owner_report,
+    directory_report,
+    team_coverage_report,
+    access_role_report,
     scan_report,
     backlog_export,
     event_view,
@@ -1583,6 +1688,23 @@ def build_finance_packet_html(
     )
     team_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="", template="plotly_white")
 
+    lifecycle_chart = lifecycle_report.melt(
+        "status",
+        value_vars=["projected_monthly_savings", "realized_monthly_savings", "missed_savings"],
+        var_name="metric",
+        value_name="amount",
+    )
+    lifecycle_fig = px.bar(
+        lifecycle_chart,
+        x="status",
+        y="amount",
+        color="metric",
+        barmode="group",
+        labels={"amount": "USD", "status": ""},
+        color_discrete_map=REPORT_METRIC_COLORS,
+    )
+    lifecycle_fig.update_layout(height=360, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="", template="plotly_white")
+
     unresolved_fig = px.bar(
         unresolved.head(15).sort_values("missed_savings_to_date"),
         x="missed_savings_to_date",
@@ -1618,6 +1740,27 @@ def build_finance_packet_html(
     scan_fig.update_xaxes(tickformat="%b %d")
     scan_fig.update_layout(height=330, margin=dict(l=20, r=20, t=30, b=30), template="plotly_white")
 
+    team_coverage_fig = px.bar(
+        team_coverage_report.sort_values("assigned_users", ascending=True),
+        x="assigned_users",
+        y="team",
+        color="open_items",
+        orientation="h",
+        labels={"assigned_users": "Assigned Users", "team": "", "open_items": "Open Items"},
+        color_continuous_scale="Blues",
+    )
+    team_coverage_fig.update_layout(height=390, margin=dict(l=20, r=20, t=30, b=30), template="plotly_white")
+
+    access_role_fig = px.bar(
+        access_role_report,
+        x="access_role",
+        y="users",
+        color="access_role",
+        labels={"access_role": "", "users": "Users"},
+        color_discrete_sequence=REPORT_COLORS,
+    )
+    access_role_fig.update_layout(height=320, margin=dict(l=20, r=20, t=30, b=30), showlegend=False, template="plotly_white")
+
     money_columns = [
         "projected_monthly_savings",
         "projected_annual_savings",
@@ -1637,8 +1780,10 @@ def build_finance_packet_html(
     limits = REPORT_DETAIL_LIMITS[report_detail]
     category_section = ""
     team_section = ""
+    lifecycle_section = ""
     unresolved_section = ""
     owner_section = ""
+    users_roles_section = ""
     scan_section = ""
 
     executive_section = f"""
@@ -1666,6 +1811,13 @@ def build_finance_packet_html(
   {format_report_table(team_report.sort_values("missed_savings", ascending=False), money_columns, ["realization_rate"])}
 """
 
+    if "Recommendation lifecycle" in selected_sections:
+        lifecycle_section = f"""
+  <h2>Recommendation Lifecycle</h2>
+  {chart_html(lifecycle_fig)}
+  {format_report_table(lifecycle_report, money_columns, ["realization_rate"])}
+"""
+
     if "Unresolved opportunity" in selected_sections:
         unresolved_section = f"""
   <h2>Unresolved Opportunity</h2>
@@ -1678,6 +1830,18 @@ def build_finance_packet_html(
   <h2>Owner Accountability</h2>
   {chart_html(owner_fig)}
   {format_report_table(owner_report.sort_values("missed_savings", ascending=False), money_columns)}
+"""
+
+    if "Users and roles" in selected_sections:
+        users_roles_section = f"""
+  <h2>Users and Roles</h2>
+  {chart_html(team_coverage_fig)}
+  {format_report_table(team_coverage_report.sort_values(['assigned_users', 'missed_savings'], ascending=[False, False]), money_columns)}
+  <h3>Access Role Coverage</h3>
+  {chart_html(access_role_fig)}
+  {format_report_table(access_role_report)}
+  <h3>User Directory</h3>
+  {format_report_table(directory_report.sort_values(['team', 'owner']))}
 """
 
     if "Scan ROI history" in selected_sections:
@@ -1716,8 +1880,10 @@ def build_finance_packet_html(
   {executive_section}
   {category_section}
   {team_section}
+  {lifecycle_section}
   {unresolved_section}
   {owner_section}
+  {users_roles_section}
   {scan_section}
   <h2>Recommendation Backlog Detail</h2>
   {format_report_table(backlog_export, money_columns, limit=limits["backlog"])}
@@ -1740,8 +1906,10 @@ def reports_page():
                 "Executive ROI summary",
                 "Savings by team",
                 "Savings by category",
+                "Recommendation lifecycle",
                 "Unresolved opportunity",
                 "Owner accountability",
+                "Users and roles",
                 "Scan ROI history",
                 "Custom report",
             ],
@@ -1819,6 +1987,20 @@ def reports_page():
     team_report["realization_rate"] = (
         team_report["realized_monthly_savings"] / team_report["projected_monthly_savings"]
     ).fillna(0)
+    lifecycle_report = page_recs.groupby("status", as_index=False).agg(
+        recommendations=("recommendation_id", "count"),
+        open_items=("is_open", "sum"),
+        projected_monthly_savings=("projected_monthly_savings", "sum"),
+        projected_annual_savings=("projected_annual_savings", "sum"),
+        realized_monthly_savings=("realized_monthly_savings", "sum"),
+        missed_savings=("missed_savings_to_date", "sum"),
+        avg_days_open=("days_lingering", "mean"),
+    )
+    lifecycle_report["status"] = pd.Categorical(lifecycle_report["status"], categories=status_order, ordered=True)
+    lifecycle_report = lifecycle_report.sort_values("status")
+    lifecycle_report["realization_rate"] = (
+        lifecycle_report["realized_monthly_savings"] / lifecycle_report["projected_monthly_savings"]
+    ).fillna(0)
     unresolved = page_recs[page_recs["is_open"]].sort_values(
         ["missed_savings_to_date", "projected_daily_savings"], ascending=False
     )
@@ -1835,6 +2017,71 @@ def reports_page():
     scan_report["identified_monthly_savings"] = monthly_opportunity
     scan_report["savings_per_scan_dollar"] = scan_report["identified_monthly_savings"] / scan_report["scan_cost_usd"]
     scan_report.loc[scan_report["scan_cost_usd"] == 0, "savings_per_scan_dollar"] = 0
+    directory_report = pd.DataFrame(user_directory_frame(settings))
+    if directory_report.empty:
+        directory_report = pd.DataFrame(columns=["owner", "team", "role", "access_role", "email"])
+    else:
+        directory_report = directory_report.reindex(columns=["owner", "team", "role", "access_role", "email"]).sort_values(
+            ["team", "owner"]
+        )
+    app_role_options = application_role_catalog(settings)
+    team_coverage_report = pd.DataFrame({"team": team_catalog(settings)})
+    directory_counts = (
+        directory_report.groupby("team", as_index=False).agg(assigned_users=("owner", "count"))
+        if not directory_report.empty
+        else pd.DataFrame(columns=["team", "assigned_users"])
+    )
+    team_metrics = team_report[
+        [
+            "team",
+            "recommendations",
+            "open_items",
+            "projected_monthly_savings",
+            "projected_annual_savings",
+            "realized_monthly_savings",
+            "missed_savings",
+            "avg_days_open",
+            "realization_rate",
+        ]
+    ]
+    team_coverage_report = team_coverage_report.merge(directory_counts, on="team", how="left").merge(
+        team_metrics, on="team", how="left"
+    )
+    if not directory_report.empty:
+        access_matrix = (
+            directory_report.assign(user_count=1)
+            .pivot_table(index="team", columns="access_role", values="user_count", aggfunc="sum", fill_value=0)
+            .reset_index()
+        )
+        team_coverage_report = team_coverage_report.merge(access_matrix, on="team", how="left")
+    for role_name in app_role_options:
+        if role_name not in team_coverage_report.columns:
+            team_coverage_report[role_name] = 0
+    numeric_fill = [
+        "assigned_users",
+        "recommendations",
+        "open_items",
+        "projected_monthly_savings",
+        "projected_annual_savings",
+        "realized_monthly_savings",
+        "missed_savings",
+        "avg_days_open",
+        "realization_rate",
+        *app_role_options,
+    ]
+    for column in numeric_fill:
+        if column in team_coverage_report.columns:
+            team_coverage_report[column] = team_coverage_report[column].fillna(0)
+    access_role_report = (
+        directory_report.groupby("access_role", as_index=False).agg(users=("owner", "count"))
+        if not directory_report.empty
+        else pd.DataFrame({"access_role": app_role_options, "users": [0] * len(app_role_options)})
+    )
+    if not access_role_report.empty:
+        access_role_report["access_role"] = pd.Categorical(
+            access_role_report["access_role"], categories=app_role_options, ordered=True
+        )
+        access_role_report = access_role_report.sort_values("access_role")
     backlog_cols = [
         "recommendation_id",
         "severity",
@@ -1882,8 +2129,12 @@ def reports_page():
         realized_monthly,
         category_report,
         team_report,
+        lifecycle_report,
         unresolved,
         owner_report,
+        directory_report,
+        team_coverage_report,
+        access_role_report,
         scan_report,
     )
     action_cols = st.columns([1.15, 1.12, 1.05, 2.9], gap="small", vertical_alignment="top")
@@ -1908,8 +2159,12 @@ def reports_page():
             summary_rows,
             category_report,
             team_report,
+            lifecycle_report,
             unresolved,
             owner_report,
+            directory_report,
+            team_coverage_report,
+            access_role_report,
             scan_report,
             backlog_export,
             event_view,
@@ -1925,8 +2180,12 @@ def reports_page():
             summary_rows,
             category_report,
             team_report,
+            lifecycle_report,
             unresolved,
             owner_report,
+            directory_report,
+            team_coverage_report,
+            access_role_report,
             scan_report,
             backlog_export,
             event_view,
@@ -1952,8 +2211,12 @@ def reports_page():
             roi_bridge,
             category_report,
             team_report,
+            lifecycle_report,
             unresolved,
             owner_report,
+            directory_report,
+            team_coverage_report,
+            access_role_report,
             scan_report,
             backlog_export,
             event_view,
@@ -2082,6 +2345,41 @@ def reports_page():
                 },
             )
 
+    if "Recommendation lifecycle" in selected_sections:
+        st.subheader("Recommendation Lifecycle")
+        left, right = st.columns([1.05, 1])
+        with left:
+            lifecycle_chart = lifecycle_report.melt(
+                "status",
+                value_vars=["projected_monthly_savings", "realized_monthly_savings", "missed_savings"],
+                var_name="metric",
+                value_name="amount",
+            )
+            fig = px.bar(
+                lifecycle_chart,
+                x="status",
+                y="amount",
+                color="metric",
+                barmode="group",
+                labels={"amount": "USD", "status": ""},
+            )
+            fig.update_layout(height=360, margin=dict(l=10, r=10, t=20, b=10), legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True)
+        with right:
+            st.dataframe(
+                lifecycle_report,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "projected_monthly_savings": st.column_config.NumberColumn("Projected Monthly", format="$%d"),
+                    "projected_annual_savings": st.column_config.NumberColumn("Projected Annual", format="$%d"),
+                    "realized_monthly_savings": st.column_config.NumberColumn("Realized Monthly", format="$%d"),
+                    "missed_savings": st.column_config.NumberColumn("Missed Savings", format="$%d"),
+                    "avg_days_open": st.column_config.NumberColumn("Avg Days Open", format="%.1f"),
+                    "realization_rate": st.column_config.NumberColumn("Realization Rate", format="%.0%"),
+                },
+            )
+
     if "Unresolved opportunity" in selected_sections:
         st.subheader("Unresolved Opportunity")
         st.markdown(
@@ -2152,6 +2450,52 @@ def reports_page():
                 "missed_savings": st.column_config.NumberColumn("Missed Savings", format="$%d"),
                 "avg_days_open": st.column_config.NumberColumn("Avg Days Open", format="%.1f"),
             },
+        )
+
+    if "Users and roles" in selected_sections:
+        st.subheader("Users and Roles")
+        left, right = st.columns([1.05, 1])
+        with left:
+            fig = px.bar(
+                team_coverage_report.sort_values(["assigned_users", "missed_savings"], ascending=[True, True]),
+                x="assigned_users",
+                y="team",
+                color="open_items",
+                orientation="h",
+                labels={"assigned_users": "Assigned Users", "team": "", "open_items": "Open Items"},
+                color_continuous_scale="Blues",
+            )
+            fig.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+        with right:
+            fig = px.bar(
+                access_role_report,
+                x="access_role",
+                y="users",
+                color="access_role",
+                labels={"access_role": "", "users": "Users"},
+                color_discrete_sequence=REPORT_COLORS,
+            )
+            fig.update_layout(height=380, margin=dict(l=10, r=10, t=20, b=10), showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(
+            team_coverage_report.sort_values(["assigned_users", "missed_savings"], ascending=[False, False]),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "assigned_users": st.column_config.NumberColumn("Assigned Users", format="%d"),
+                "projected_monthly_savings": st.column_config.NumberColumn("Projected Monthly", format="$%d"),
+                "projected_annual_savings": st.column_config.NumberColumn("Projected Annual", format="$%d"),
+                "realized_monthly_savings": st.column_config.NumberColumn("Realized Monthly", format="$%d"),
+                "missed_savings": st.column_config.NumberColumn("Missed Savings", format="$%d"),
+                "avg_days_open": st.column_config.NumberColumn("Avg Days Open", format="%.1f"),
+                "realization_rate": st.column_config.NumberColumn("Realization Rate", format="%.0%"),
+            },
+        )
+        st.dataframe(
+            directory_report,
+            use_container_width=True,
+            hide_index=True,
         )
 
     if "Scan ROI history" in selected_sections:
@@ -2360,6 +2704,7 @@ def scan_control_page_section(credit_price):
 
 def settings_page():
     settings = current_app_settings(st.session_state)
+    app_settings = settings
     st.title("Settings")
     st.caption("POC controls for scan configuration, thresholds, and Snowflake Marketplace packaging assumptions.")
     if not has_permission("admin"):
@@ -2425,8 +2770,6 @@ def settings_page():
                 },
             )
             st.success("Threshold settings saved. New scans and default filters will use these values.")
-    else:
-        app_settings = settings
 
     st.subheader("Snowflake Connection")
     config_rows = []
@@ -2514,50 +2857,6 @@ def settings_page():
     )
     st.dataframe(access_model, use_container_width=True, hide_index=True)
 
-    st.subheader("Users and Roles")
-    directory = pd.DataFrame(user_directory_frame(settings))
-    st.dataframe(directory, use_container_width=True, hide_index=True)
-    team_seed = sorted(directory["team"].dropna().unique().tolist()) if not directory.empty else sorted(recommendations["team"].dropna().unique().tolist())
-    if not team_seed:
-        team_seed = ["Data Platform"]
-
-    user_cols = st.columns([1.2, 1.1, 1.1, 0.9])
-    new_owner = user_cols[0].text_input("User name", value="", placeholder="Enter person name")
-    new_team = user_cols[1].selectbox(
-        "Assigned team",
-        team_seed,
-        index=0,
-        key="settings_user_team",
-    )
-    new_role = user_cols[2].text_input("Assigned role", value="", placeholder="Team role")
-    action_choice = user_cols[3].selectbox("Action", ["Add / update", "Remove"], key="settings_user_action")
-
-    if has_permission("admin"):
-        if st.button("Save user directory", type="primary"):
-            current_directory = user_directory_frame(settings)
-            updated_directory = [dict(entry) for entry in current_directory]
-            if new_owner.strip():
-                existing = next((entry for entry in updated_directory if entry["owner"] == new_owner.strip()), None)
-                if action_choice == "Remove":
-                    updated_directory = [entry for entry in updated_directory if entry["owner"] != new_owner.strip()]
-                else:
-                    payload = {
-                        "owner": new_owner.strip(),
-                        "team": new_team,
-                        "role": new_role.strip() or "Contributor",
-                    }
-                    if existing:
-                        existing.update(payload)
-                    else:
-                        updated_directory.append(payload)
-                persist_app_settings(st.session_state, {"user_directory": updated_directory})
-                st.success("User directory updated.")
-                st.rerun()
-            else:
-                st.warning("Enter a user name before saving the directory.")
-    else:
-        st.caption("Viewer and operator roles can review the directory, but only admins can change it.")
-
     st.subheader("Rule Catalog")
     rules = pd.DataFrame(RULE_CATALOG)
     st.dataframe(
@@ -2574,7 +2873,7 @@ def settings_page():
     st.subheader("Current POC Assumptions")
     assumptions = {
         "Credit price": money(app_settings["credit_price"]),
-        "Lookback window": f"{lookback_days} days",
+        "Lookback window": f"{app_settings['lookback_days']} days",
         "Minimum monthly savings": money(app_settings["min_monthly_savings"]),
         "Annualization period": f"{app_settings['annualization_months']} months",
         "Warehouse utilization ceiling": f"{app_settings['warehouse_utilization_ceiling']:.0f}%",
@@ -2583,6 +2882,264 @@ def settings_page():
         "Default confidence": f"{app_settings['min_confidence']:.0%}",
     }
     st.json(assumptions)
+
+
+def users_roles_page():
+    settings = current_app_settings(st.session_state)
+    st.title("Users and Roles")
+    st.caption("Manage the teams, user directory, business roles, and application access model that drive ownership and workflow routing.")
+    if not has_permission("admin"):
+        st.warning("Users and Roles is read-only for this session role. CostOps Admin is required to change assignments.")
+
+    raw_directory = [dict(entry) for entry in user_directory_frame(settings)]
+    directory = pd.DataFrame(raw_directory)
+
+    team_seed = team_catalog(settings)
+    business_roles = business_role_catalog(settings)
+    app_roles = application_role_catalog(settings)
+
+    st.subheader("Manage Teams")
+    team_modes = ["Edit team", "Remove team", "Add team"]
+    if st.session_state.get("users_roles_team_mode_version") != 2:
+        st.session_state["users_roles_team_mode"] = "Edit team"
+        st.session_state["users_roles_team_mode_version"] = 2
+    team_action_cols = st.columns([1.35, 0.72, 3.6], gap="small", vertical_alignment="top")
+    with team_action_cols[0]:
+        team_mode = st.segmented_control(
+            "Team action",
+            team_modes,
+            default="Edit team",
+            key="users_roles_team_mode",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+    with team_action_cols[1]:
+        save_team = st.button("Save", key="save_team", type="primary", use_container_width=True)
+
+    existing_team = ""
+    team_name = ""
+    if team_mode in {"Edit team", "Remove team"}:
+        detail_cols = st.columns([1.1, 1.25, 2.55], gap="small")
+        existing_team = detail_cols[0].selectbox(
+            "Choose team",
+            [""] + team_seed,
+            index=0,
+            key="users_roles_existing_team",
+            label_visibility="collapsed",
+        )
+        if team_mode == "Edit team":
+            team_name = detail_cols[1].text_input(
+                "Team name",
+                value=existing_team if existing_team else "",
+                placeholder="Team name",
+                key=f"users_roles_team_name_{team_mode}_{existing_team or 'new'}",
+                label_visibility="collapsed",
+            )
+    else:
+        team_name = st.columns([1.15, 3.75], gap="small")[0].text_input(
+            "Team name",
+            value="",
+            placeholder="Team name",
+            key="users_roles_team_name_add",
+            label_visibility="collapsed",
+        )
+
+    if has_permission("admin"):
+        if save_team:
+            updated_teams = list(team_seed)
+            updated_directory = [dict(entry) for entry in raw_directory]
+            if team_mode == "Add team":
+                if not team_name.strip():
+                    st.warning("Enter a team name before saving.")
+                elif team_name.strip() in updated_teams:
+                    st.warning("That team already exists.")
+                else:
+                    updated_teams.append(team_name.strip())
+                    persist_app_settings(st.session_state, {"teams": sorted(updated_teams)})
+                    st.success("Team added.")
+                    st.rerun()
+            elif team_mode == "Edit team":
+                if not existing_team:
+                    st.warning("Choose a team to edit.")
+                elif not team_name.strip():
+                    st.warning("Enter the updated team name.")
+                elif existing_team == "Unassigned":
+                    st.warning("Unassigned is the fallback team and can't be renamed.")
+                else:
+                    updated_teams = [team_name.strip() if team == existing_team else team for team in updated_teams]
+                    for entry in updated_directory:
+                        if entry.get("team") == existing_team:
+                            entry["team"] = team_name.strip()
+                    persist_app_settings(
+                        st.session_state,
+                        {"teams": sorted(dict.fromkeys(updated_teams)), "user_directory": updated_directory},
+                    )
+                    st.success("Team updated.")
+                    st.rerun()
+            else:
+                if not existing_team:
+                    st.warning("Choose a team to remove.")
+                elif existing_team == "Unassigned":
+                    st.warning("Unassigned is the fallback team and can't be removed.")
+                else:
+                    for entry in updated_directory:
+                        if entry.get("team") == existing_team:
+                            entry["team"] = "Unassigned"
+                    updated_teams = [team for team in updated_teams if team != existing_team]
+                    persist_app_settings(
+                        st.session_state,
+                        {
+                            "teams": sorted(dict.fromkeys(["Unassigned", *updated_teams])),
+                            "user_directory": updated_directory,
+                        },
+                    )
+                    st.success("Team removed. Assigned users were moved to Unassigned.")
+                    st.rerun()
+
+    st.dataframe(pd.DataFrame({"team": team_seed}), use_container_width=True, hide_index=True)
+
+    st.subheader("Manage Users")
+    user_modes = ["Add new", "Edit existing", "Remove"]
+    user_action_cols = st.columns([1.35, 0.72, 3.6], gap="small", vertical_alignment="top")
+    with user_action_cols[0]:
+        mode = st.segmented_control(
+            "Action",
+            user_modes,
+            default=st.session_state.get("users_roles_mode", user_modes[0]),
+            key="users_roles_mode",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+    with user_action_cols[1]:
+        button_label = "Save" if mode != "Remove" else "Remove"
+        button_kind = "primary" if mode != "Remove" else "secondary"
+        save_user = st.button(button_label, type=button_kind, use_container_width=True)
+
+    selected_owner = None
+    selected_entry = None
+    if mode in {"Edit existing", "Remove"}:
+        directory_names = [""] + sorted(directory["owner"].dropna().tolist()) if not directory.empty else [""]
+        selected_owner = st.selectbox(
+            "Choose user",
+            directory_names,
+            index=0,
+            key="users_roles_selected_owner",
+            label_visibility="collapsed",
+        )
+        if selected_owner:
+            selected_entry = next((entry for entry in raw_directory if entry.get("owner") == selected_owner), None)
+
+    owner_value = selected_entry.get("owner", "") if selected_entry else ""
+    team_value = selected_entry.get("team", team_seed[0]) if selected_entry else team_seed[0]
+    role_value = selected_entry.get("role", "") if selected_entry else ""
+    email_value = selected_entry.get("email", "") if selected_entry else ""
+    access_role_value = selected_entry.get("access_role", app_roles[-1]) if selected_entry else app_roles[-1]
+
+    admin_cols = st.columns([1.15, 1.0, 1.0, 1.0, 1.2], gap="small")
+    user_name = admin_cols[0].text_input(
+        "User name",
+        value=owner_value,
+        placeholder="Enter person name",
+        disabled=mode == "Remove",
+        key=f"users_roles_name_{mode}_{selected_owner or 'new'}",
+        label_visibility="collapsed",
+    )
+    team_index = team_seed.index(team_value) if team_value in team_seed else 0
+    assigned_team = admin_cols[1].selectbox(
+        "Assigned team",
+        team_seed,
+        index=team_index,
+        disabled=mode == "Remove",
+        key=f"users_roles_team_{mode}_{selected_owner or 'new'}",
+        label_visibility="collapsed",
+    )
+    role_index = business_roles.index(role_value) if role_value in business_roles else 0
+    assigned_role = admin_cols[2].selectbox(
+        "Business role",
+        business_roles,
+        index=role_index,
+        disabled=mode == "Remove",
+        key=f"users_roles_role_{mode}_{selected_owner or 'new'}",
+        label_visibility="collapsed",
+    )
+    access_role_index = app_roles.index(access_role_value) if access_role_value in app_roles else len(app_roles) - 1
+    assigned_access_role = admin_cols[3].selectbox(
+        "App access role",
+        app_roles,
+        index=access_role_index,
+        disabled=mode == "Remove",
+        key=f"users_roles_access_{mode}_{selected_owner or 'new'}",
+        label_visibility="collapsed",
+    )
+    email_address = admin_cols[4].text_input(
+        "Email address",
+        value=email_value,
+        placeholder="name@company.com",
+        disabled=mode == "Remove",
+        key=f"users_roles_email_{mode}_{selected_owner or 'new'}",
+        label_visibility="collapsed",
+    )
+
+    if has_permission("admin"):
+        if save_user:
+            updated_directory = [dict(entry) for entry in raw_directory]
+            target_owner = selected_owner if mode in {"Edit existing", "Remove"} else user_name.strip()
+            if mode == "Remove":
+                if not target_owner:
+                    st.warning("Choose a user before removing them.")
+                else:
+                    updated_directory = [entry for entry in updated_directory if entry.get("owner") != target_owner]
+                    st.session_state["users_roles_selected_owner"] = ""
+                    persist_app_settings(st.session_state, {"user_directory": updated_directory})
+                    st.success("User removed from the directory.")
+                    st.rerun()
+            else:
+                if not user_name.strip():
+                    st.warning("Enter a user name before saving.")
+                else:
+                    payload = {
+                        "owner": user_name.strip(),
+                        "team": assigned_team,
+                        "role": assigned_role,
+                        "email": email_address.strip(),
+                        "access_role": assigned_access_role,
+                    }
+                    if mode == "Edit existing" and target_owner:
+                        updated_directory = [entry for entry in updated_directory if entry.get("owner") != target_owner]
+                    else:
+                        updated_directory = [entry for entry in updated_directory if entry.get("owner") != payload["owner"]]
+                    updated_directory.append(payload)
+                    updated_directory = sorted(updated_directory, key=lambda entry: entry.get("owner", ""))
+                    st.session_state["users_roles_selected_owner"] = ""
+                    persist_app_settings(st.session_state, {"user_directory": updated_directory})
+                    st.success("User directory updated.")
+                    st.rerun()
+    else:
+        st.caption("Viewer and operator roles can review the directory, but only admins can change it.")
+
+    st.subheader("Current Directory")
+    directory_view = directory.copy()
+    directory_view = directory_view.reindex(columns=["owner", "team", "role", "access_role", "email"])
+    st.dataframe(directory_view, use_container_width=True, hide_index=True)
+
+    catalog_cols = st.columns(2, gap="large")
+    with catalog_cols[0]:
+        st.subheader("Business Role Catalog")
+        st.dataframe(pd.DataFrame({"business_role": business_roles}), use_container_width=True, hide_index=True)
+    with catalog_cols[1]:
+        st.subheader("Application Access Roles")
+        st.dataframe(pd.DataFrame({"application_role": app_roles}), use_container_width=True, hide_index=True)
+
+    st.subheader("Access Model")
+    access_model = pd.DataFrame(
+        [
+            ("CostOps Admin", "Installer / platform admin", "Install app, approve ACCOUNT_USAGE grant, manage settings and users"),
+            ("CostOps Operator", "Architect / engineer", "Review recommendations, manage ownership, validate implementation"),
+            ("CostOps Viewer", "Leadership / read-only", "View dashboards, reports, and realized savings without making changes"),
+        ],
+        columns=["Application Role", "Typical User", "Scope"],
+    )
+    st.dataframe(access_model, use_container_width=True, hide_index=True)
 
 
 navigation_pages = {
@@ -2603,6 +3160,7 @@ navigation_pages = {
         st.Page(reports_page, title="Reports", icon=":material/assessment:"),
     ],
     "Admin": [
+        st.Page(users_roles_page, title="Users and Roles", icon=":material/group:"),
         st.Page(settings_page, title="Settings", icon=":material/settings:"),
     ],
 }
