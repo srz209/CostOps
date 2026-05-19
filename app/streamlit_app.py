@@ -55,7 +55,7 @@ from costops.services.metrics import (
 
 
 st.set_page_config(
-    page_title="Cost Optimization POC",
+    page_title="GrainAI CostOps",
     page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -289,6 +289,148 @@ st.markdown(
         color: #92400e;
         border: 1px solid #fcd34d;
     }
+    .costops-sidebar-status {
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 0.75rem;
+        background: #111827;
+        color: #e5e7eb;
+        margin: 0.8rem 0 0.65rem 0;
+    }
+    .costops-sidebar-status-title {
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.02rem;
+        margin-bottom: 0.45rem;
+    }
+    .costops-sidebar-status-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.65rem;
+        padding: 0.24rem 0;
+        border-top: 1px solid rgba(148, 163, 184, 0.24);
+        font-size: 0.76rem;
+        line-height: 1.05rem;
+    }
+    .costops-sidebar-status-row:first-of-type {
+        border-top: 0;
+    }
+    .costops-sidebar-status-label {
+        color: #9ca3af;
+    }
+    .costops-sidebar-status-value {
+        color: #f9fafb;
+        font-weight: 700;
+        text-align: right;
+    }
+    .costops-plan-pill {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 0.18rem 0.55rem;
+        background: #e0f2fe;
+        color: #075985;
+        font-size: 0.78rem;
+        font-weight: 700;
+        margin-bottom: 0.35rem;
+    }
+    .costops-founder-callout {
+        border: 1px solid #bae6fd;
+        border-left: 5px solid #0284c7;
+        border-radius: 8px;
+        padding: 0.85rem 1rem;
+        background: #f0f9ff;
+        margin: 0.75rem 0 1rem 0;
+    }
+    .costops-founder-title {
+        color: #0c4a6e;
+        font-weight: 800;
+        margin-bottom: 0.2rem;
+    }
+    .costops-founder-copy {
+        color: #334155;
+        font-size: 0.9rem;
+        line-height: 1.35rem;
+    }
+    .costops-usage-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.7rem;
+        margin: 0.4rem 0 1rem 0;
+    }
+    .costops-usage-card {
+        border: 1px solid #d7e3f4;
+        border-radius: 8px;
+        padding: 0.75rem 0.85rem;
+        background: #ffffff;
+        min-height: 5.2rem;
+    }
+    .costops-usage-label {
+        color: #475569;
+        font-size: 0.74rem;
+        font-weight: 700;
+        margin-bottom: 0.25rem;
+    }
+    .costops-usage-value {
+        color: #0f172a;
+        font-size: 1.35rem;
+        font-weight: 800;
+        line-height: 1.7rem;
+    }
+    .costops-usage-limit {
+        color: #475569;
+        font-size: 0.78rem;
+        line-height: 1.05rem;
+        margin-top: 0.25rem;
+    }
+    .costops-plan-card {
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        padding: 0.95rem;
+        background: #ffffff;
+        min-height: 22.5rem;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+    }
+    .costops-plan-card.current {
+        border: 2px solid #1f8a5b;
+        background: #f3fbf7;
+        box-shadow: 0 10px 24px rgba(31, 138, 91, 0.14);
+    }
+    .costops-plan-name {
+        color: #0f172a;
+        font-size: 1.08rem;
+        font-weight: 850;
+        margin-bottom: 0.15rem;
+    }
+    .costops-plan-audience {
+        color: #334155;
+        font-size: 0.8rem;
+        min-height: 2.1rem;
+        line-height: 1.05rem;
+    }
+    .costops-plan-price {
+        color: #075985;
+        font-size: 1.2rem;
+        font-weight: 850;
+        margin: 0.55rem 0;
+    }
+    .costops-plan-feature {
+        color: #1f2937;
+        font-size: 0.8rem;
+        line-height: 1.15rem;
+        padding: 0.26rem 0;
+        border-top: 1px solid #e5e7eb;
+    }
+    .costops-current-tag {
+        display: inline-block;
+        color: #166534;
+        background: #dcfce7;
+        border: 1px solid #86efac;
+        border-radius: 999px;
+        padding: 0.12rem 0.45rem;
+        font-size: 0.7rem;
+        font-weight: 800;
+        margin-bottom: 0.45rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -335,6 +477,61 @@ ROLE_PERMISSIONS = {
     "CostOps Operator": {"operate", "assign", "view_sensitive"},
     "CostOps Viewer": set(),
 }
+COSTOPS_PLAN_ORDER = ("Free", "Team", "Business / Pro", "Enterprise")
+COSTOPS_PLAN_ENTITLEMENTS = {
+    "Free": {
+        "price": "$0",
+        "audience": "Snowflake cost evaluation",
+        "warehouses": "3 warehouses",
+        "recommendations": "25 active recommendations",
+        "lookback": "30-day lookback",
+        "reports": "2 report exports / month",
+        "categories": ("Warehouses", "Tasks"),
+        "scheduled_scans": "Manual scans",
+        "workflow": "Single admin",
+        "support": "Community / self-serve",
+        "cta": "Current Plan",
+    },
+    "Team": {
+        "price": "$749 / month",
+        "audience": "Small platform teams",
+        "warehouses": "15 warehouses",
+        "recommendations": "250 active recommendations",
+        "lookback": "90-day lookback",
+        "reports": "25 report exports / month",
+        "categories": ("Warehouses", "Tasks", "Workloads"),
+        "scheduled_scans": "Weekly scheduled scans",
+        "workflow": "Owners, teams, and due dates",
+        "support": "Standard support",
+        "cta": "Upgrade Through Marketplace",
+    },
+    "Business / Pro": {
+        "price": "$2,499 / month",
+        "audience": "FinOps and data platform programs",
+        "warehouses": "75 warehouses",
+        "recommendations": "Unlimited recommendations",
+        "lookback": "365-day lookback",
+        "reports": "Unlimited report exports",
+        "categories": ("Warehouses", "Tasks", "Workloads", "Storage"),
+        "scheduled_scans": "Daily scheduled scans",
+        "workflow": "Audit trail and savings realization",
+        "support": "Priority support",
+        "cta": "Upgrade Through Marketplace",
+    },
+    "Enterprise": {
+        "price": "$6,000 / month",
+        "audience": "One production Snowflake account",
+        "warehouses": "Unlimited warehouses in one production account",
+        "recommendations": "Unlimited recommendations",
+        "lookback": "Custom retention",
+        "reports": "Executive and audit packs",
+        "categories": ("Warehouses", "Tasks", "Workloads", "Storage", "Custom rules"),
+        "scheduled_scans": "Daily production scans plus dev/test validation",
+        "workflow": "Dedicated persistence, SSO, RBAC, SLA",
+        "support": "Dedicated success path",
+        "cta": "Select Enterprise",
+    },
+}
 
 
 @st.cache_data
@@ -363,17 +560,34 @@ data = load_data()
 AS_OF_DATE = pd.Timestamp("2026-05-18")
 initialize_app_settings(st.session_state)
 initialize_session_store(st.session_state, data["recommendations"], data["recommendation_events"], data["scan_runs"])
+st.session_state.setdefault("current_access_role", "CostOps Admin")
+st.session_state.setdefault("data_source_mode", "Sample data")
 
 recommendations = enrich_recommendation_lifecycle(recommendations_frame(st.session_state), AS_OF_DATE)
 recommendation_events = recommendation_events_frame(st.session_state)
 scan_runs = scan_runs_frame(st.session_state)
 warehouses = data["warehouses"]
 data_source_status = "Sample data loaded"
-data_source_mode = "Sample data"
+data_source_mode = st.session_state.get("data_source_mode", "Sample data")
 snowflake_config = get_snowflake_config()
 workloads = data["workloads"]
 storage = data["storage"]
 tasks = data["tasks"]
+if data_source_mode == "Snowflake":
+    if snowflake_config:
+        try:
+            warehouses = load_live_warehouse_metering(
+                snowflake_config,
+                lookback_days=int(current_app_settings(st.session_state)["lookback_days"]),
+                credit_price=float(current_app_settings(st.session_state)["credit_price"]),
+            )
+            data_source_status = "Snowflake warehouse metering loaded"
+        except Exception as exc:
+            data_source_status = f"Snowflake load failed; using sample data. {exc}"
+            warehouses = data["warehouses"]
+    else:
+        data_source_status = "Snowflake secrets missing; using sample data"
+        warehouses = data["warehouses"]
 
 severity_order = ["Critical", "High", "Medium", "Low"]
 status_order = ["Proposed", "Selected", "Accepted", "Deferred", "Rejected", "Implemented", "Realized"]
@@ -743,7 +957,7 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
 
 
 def overview():
-    st.title("Snowflake Cost Optimization POC")
+    st.title("GrainAI CostOps")
     overview_filters = render_recommendation_filter_bar("overview")
     page_recs = apply_recommendation_filters(
         recommendations,
@@ -3315,6 +3529,25 @@ def settings_page():
     if not has_permission("admin"):
         st.warning("Settings are read-only for this session role. CostOps Admin is required for connection and install actions.")
 
+    st.subheader("Session Controls")
+    session_cols = st.columns(2)
+    with session_cols[0]:
+        st.selectbox(
+            "Access role",
+            ACCESS_ROLES,
+            index=ACCESS_ROLES.index(st.session_state.get("current_access_role", "CostOps Admin")),
+            key="current_access_role",
+            help="Local demo selector for testing Admin, Operator, and Viewer permissions.",
+        )
+    with session_cols[1]:
+        st.selectbox(
+            "Data source",
+            ["Sample data", "Snowflake"],
+            index=["Sample data", "Snowflake"].index(st.session_state.get("data_source_mode", "Sample data")),
+            key="data_source_mode",
+            help="Use sample data for demos, or Snowflake when secrets are configured.",
+        )
+
     left, center, right = st.columns(3)
     with left:
         st.subheader("Cost Model")
@@ -3747,6 +3980,178 @@ def users_roles_page():
     st.dataframe(access_model, use_container_width=True, hide_index=True)
 
 
+def current_costops_plan():
+    plan_name = st.session_state.get("costops_plan_name", "Free")
+    if plan_name not in COSTOPS_PLAN_ENTITLEMENTS:
+        plan_name = "Free"
+    return plan_name, COSTOPS_PLAN_ENTITLEMENTS[plan_name]
+
+
+def set_costops_plan(plan_name):
+    if plan_name in COSTOPS_PLAN_ENTITLEMENTS:
+        st.session_state["costops_plan_name"] = plan_name
+
+
+def warehouse_observed_count(warehouse_frame):
+    if "warehouse" in warehouse_frame.columns:
+        return int(warehouse_frame["warehouse"].nunique())
+    if "warehouse_name" in warehouse_frame.columns:
+        return int(warehouse_frame["warehouse_name"].nunique())
+    return int(len(warehouse_frame))
+
+
+def render_sidebar_plan_status(recommendation_count, warehouse_count):
+    plan_name, plan = current_costops_plan()
+    category_text = ", ".join(plan["categories"])
+    st.markdown(
+        f"""
+        <div class="costops-sidebar-status">
+            <div class="costops-sidebar-status-title">Current Plan</div>
+            <div class="costops-sidebar-status-row">
+                <span class="costops-sidebar-status-label">Plan</span>
+                <span class="costops-sidebar-status-value">{escape(plan_name)}</span>
+            </div>
+            <div class="costops-sidebar-status-row">
+                <span class="costops-sidebar-status-label">Warehouses</span>
+                <span class="costops-sidebar-status-value">{warehouse_count} / {escape(plan["warehouses"])}</span>
+            </div>
+            <div class="costops-sidebar-status-row">
+                <span class="costops-sidebar-status-label">Recommendations</span>
+                <span class="costops-sidebar-status-value">{recommendation_count} / {escape(plan["recommendations"])}</span>
+            </div>
+            <div class="costops-sidebar-status-row">
+                <span class="costops-sidebar-status-label">Coverage</span>
+                <span class="costops-sidebar-status-value">{escape(category_text)}</span>
+            </div>
+            <div class="costops-sidebar-status-row">
+                <span class="costops-sidebar-status-label">Scan cadence</span>
+                <span class="costops-sidebar-status-value">{escape(plan["scheduled_scans"])}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def upgrade_plan_page():
+    plan_name, active_plan = current_costops_plan()
+    recommendation_count = int(recommendations["recommendation_id"].nunique())
+    warehouse_count = warehouse_observed_count(warehouses)
+    active_categories = ", ".join(active_plan["categories"])
+
+    st.title("Upgrade Plan")
+    st.caption(
+        "Choose the CostOps tier for the Snowflake estate you want to monitor. "
+        "Paid plans are scoped to a production Snowflake account. Dev and test "
+        "validation environments can be linked to that production account for rollout testing."
+    )
+
+    st.subheader("Current Usage")
+    st.markdown(
+        f"""
+        <div class="costops-usage-grid">
+            <div class="costops-usage-card">
+                <div class="costops-usage-label">Current plan</div>
+                <div class="costops-usage-value">{escape(plan_name)}</div>
+                <div class="costops-usage-limit">Price: {escape(active_plan["price"])}</div>
+            </div>
+            <div class="costops-usage-card">
+                <div class="costops-usage-label">Warehouses observed</div>
+                <div class="costops-usage-value">{warehouse_count:,}</div>
+                <div class="costops-usage-limit">Included: {escape(active_plan["warehouses"])}</div>
+            </div>
+            <div class="costops-usage-card">
+                <div class="costops-usage-label">Recommendations observed</div>
+                <div class="costops-usage-value">{recommendation_count:,}</div>
+                <div class="costops-usage-limit">Included: {escape(active_plan["recommendations"])}</div>
+            </div>
+            <div class="costops-usage-card">
+                <div class="costops-usage-label">Coverage included</div>
+                <div class="costops-usage-value">{len(active_plan["categories"])} categories</div>
+                <div class="costops-usage-limit">{escape(active_categories)} | {escape(active_plan["lookback"])}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="costops-founder-callout">
+            <div class="costops-founder-title">CostOps upgrade path and billing unit</div>
+            <div class="costops-founder-copy">
+                Free focuses on the two most common cost-control areas: warehouse sizing and task hygiene.
+                Team adds workload analysis and weekly scans. Business / Pro unlocks storage, daily scans,
+                unlimited reporting, and savings realization. Enterprise is $6,000 per month for one
+                production Snowflake account, with dedicated persistence, SSO, RBAC, SLA, and linked
+                dev/test validation for safe rollout. Separate production Snowflake accounts require
+                separate CostOps instances unless covered by a suite enterprise agreement.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("Choose A Plan")
+    plan_columns = st.columns(len(COSTOPS_PLAN_ORDER))
+    for index, candidate_name in enumerate(COSTOPS_PLAN_ORDER):
+        with plan_columns[index]:
+            _render_costops_plan_card(candidate_name, plan_name)
+
+    _render_costops_marketplace_workflow()
+
+
+def _render_costops_plan_card(candidate_name, active_plan_name):
+    plan = COSTOPS_PLAN_ENTITLEMENTS[candidate_name]
+    is_current = candidate_name == active_plan_name
+    card_class = "costops-plan-card current" if is_current else "costops-plan-card"
+    current_tag = '<div class="costops-current-tag">Current plan</div>' if is_current else ""
+    card_html = (
+        f'<div class="{card_class}">'
+        f'{current_tag}'
+        f'<div class="costops-plan-name">{escape(candidate_name)}</div>'
+        f'<div class="costops-plan-audience">{escape(plan["audience"])}</div>'
+        f'<div class="costops-plan-price">{escape(plan["price"])}</div>'
+        f'<div class="costops-plan-feature">{escape(plan["warehouses"])}</div>'
+        f'<div class="costops-plan-feature">{escape(plan["recommendations"])}</div>'
+        f'<div class="costops-plan-feature">{escape(plan["lookback"])}</div>'
+        f'<div class="costops-plan-feature">{escape(plan["reports"])}</div>'
+        f'<div class="costops-plan-feature">Coverage: {escape(", ".join(plan["categories"]))}</div>'
+        f'<div class="costops-plan-feature">{escape(plan["scheduled_scans"])}</div>'
+        f'<div class="costops-plan-feature">{escape(plan["workflow"])}</div>'
+        f'<div class="costops-plan-feature">{escape(plan["support"])}</div>'
+        "</div>"
+    )
+    st.markdown(card_html, unsafe_allow_html=True)
+
+    if is_current:
+        st.button("Current Plan", disabled=True, width="stretch", key=f"current_{candidate_name}")
+        return
+
+    if st.button(plan["cta"], width="stretch", key=f"select_plan_{candidate_name}"):
+        set_costops_plan(candidate_name)
+        if candidate_name == "Enterprise":
+            st.success("Enterprise selected for this demo session at $6,000/month per production Snowflake account.")
+        else:
+            st.success(f"{candidate_name} selected for this demo session.")
+        st.rerun()
+
+
+def _render_costops_marketplace_workflow():
+    st.subheader("Marketplace Upgrade Workflow")
+    st.markdown(
+        """
+        1. A user reaches a CostOps limit or wants broader scan coverage.
+        2. CostOps shows the plan comparison and recommended upgrade path.
+        3. An admin upgrades through Snowflake Marketplace for one production Snowflake account.
+        4. Snowflake handles subscription, billing, invoice, or offer acceptance.
+        5. CostOps receives the updated entitlement and keeps the same workspace history.
+        6. Dev and test accounts can validate configuration changes before production rollout.
+        7. Separate production accounts are billed as separate CostOps instances unless covered by a suite enterprise agreement.
+        """
+    )
+
+
 navigation_pages = {
     "Command Center": [
         st.Page(overview, title="Overview", icon=":material/space_dashboard:", default=True),
@@ -3765,6 +4170,7 @@ navigation_pages = {
         st.Page(reports_page, title="Reports", icon=":material/assessment:"),
     ],
     "Admin": [
+        st.Page(upgrade_plan_page, title="Upgrade Plan", icon=":material/workspace_premium:", url_path="upgrade_plan"),
         st.Page(users_roles_page, title="Users and Roles", icon=":material/group:"),
         st.Page(settings_page, title="Settings", icon=":material/settings:"),
     ],
@@ -3773,35 +4179,14 @@ navigation_pages = {
 current_page = st.navigation(navigation_pages, position="sidebar", expanded=True)
 
 with st.sidebar:
-    st.title("Cost Optimization")
-    sidebar_settings = current_app_settings(st.session_state)
-    st.session_state["current_access_role"] = st.selectbox(
-        "Access role",
-        ACCESS_ROLES,
-        index=ACCESS_ROLES.index(st.session_state.get("current_access_role", "CostOps Admin")),
-        help="Local POC role selector that mirrors the intended Marketplace application-role model.",
+    st.divider()
+    render_sidebar_plan_status(
+        recommendation_count=int(recommendations["recommendation_id"].nunique()),
+        warehouse_count=warehouse_observed_count(warehouses),
     )
-    data_source_mode = st.selectbox("Data source", ["Sample data", "Snowflake"], index=0)
-    if data_source_mode == "Snowflake":
-        if snowflake_config:
-            try:
-                warehouses = load_live_warehouse_metering(
-                    snowflake_config,
-                    lookback_days=int(sidebar_settings["lookback_days"]),
-                    credit_price=float(sidebar_settings["credit_price"]),
-                )
-                data_source_status = "Snowflake warehouse metering loaded"
-            except Exception as exc:
-                data_source_status = f"Snowflake load failed; using sample data. {exc}"
-                warehouses = data["warehouses"]
-        else:
-            data_source_status = "Snowflake secrets missing; using sample data"
-            warehouses = data["warehouses"]
-
     st.divider()
     st.caption("Data source status")
     state = "complete" if data_source_status in {"Sample data loaded", "Snowflake warehouse metering loaded"} else "error"
     st.status(data_source_status, state=state, expanded=False)
-    st.caption(f"Session role: {st.session_state['current_access_role']}")
 
 current_page.run()
