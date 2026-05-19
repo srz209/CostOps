@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, letter
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +61,55 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+_BASE_STREAMLIT_DATAFRAME = st.dataframe
+
+
+def friendly_column_name(name):
+    if not isinstance(name, str):
+        return name
+    parts = [part for part in name.replace("_", " ").split(" ") if part]
+    acronym_map = {
+        "id": "ID",
+        "roi": "ROI",
+        "sql": "SQL",
+        "usd": "USD",
+        "mtd": "MTD",
+        "qtd": "QTD",
+        "ytd": "YTD",
+        "etl": "ETL",
+        "bi": "BI",
+        "qa": "QA",
+        "api": "API",
+    }
+    display_parts = []
+    for part in parts:
+        lower = part.lower()
+        if lower in acronym_map:
+            display_parts.append(acronym_map[lower])
+        elif lower.endswith("id") and lower[:-2] in {"recommendation", "baseline", "scan", "event", "object"}:
+            display_parts.append(f"{lower[:-2].capitalize()} ID")
+        else:
+            display_parts.append(part.capitalize())
+    return " ".join(display_parts)
+
+
+def app_dataframe(data=None, **kwargs):
+    if isinstance(data, pd.DataFrame):
+        renamed = data.copy()
+        renamed.columns = [friendly_column_name(column) for column in renamed.columns]
+        column_config = kwargs.get("column_config")
+        if column_config:
+            remapped_config = {}
+            for key, value in column_config.items():
+                remapped_key = friendly_column_name(key) if isinstance(key, str) else key
+                remapped_config[remapped_key] = value
+            kwargs["column_config"] = remapped_config
+        return _BASE_STREAMLIT_DATAFRAME(renamed, **kwargs)
+    return _BASE_STREAMLIT_DATAFRAME(data, **kwargs)
+
+
+st.dataframe = app_dataframe
+
 st.markdown(
     """
     <style>
@@ -94,6 +143,12 @@ st.markdown(
         font-size: 1rem;
         font-weight: 600;
         margin: 0.25rem 0 0.15rem 0;
+        display: inline-block;
+        padding: 0.22rem 0.55rem;
+        border-radius: 6px;
+        background: #fef3c7;
+        border: 1px solid #fcd34d;
+        color: #92400e;
     }
     .compact-meta {
         font-size: 0.78rem;
@@ -265,6 +320,8 @@ REPORT_PRESETS = {
     "Owner accountability": ["Owner accountability", "Users and roles"],
     "Users and roles": ["Users and roles", "Owner accountability"],
     "Scan ROI history": ["Scan ROI history"],
+    "Recommendation backlog": [],
+    "Recommendation audit trail": [],
     "Custom report": ["Savings by category", "Savings by team", "Recommendation lifecycle", "Users and roles"],
 }
 REPORT_DETAIL_LIMITS = {
@@ -1349,6 +1406,40 @@ def executive_report_context(
             f"The current directory includes {defined_users:,} users across {defined_teams:,} teams. "
             f"{'No teams are staffed yet.' if largest_team is None else f'{largest_team["team"]} is the largest staffed team with {int(largest_team["assigned_users"]):,} users.'}"
         )
+    elif report_type == "Recommendation backlog":
+        total_recommendations = int(category_report["recommendations"].sum()) if not category_report.empty else 0
+        actioned_count = max(total_recommendations - recommendations_open, 0)
+        top_backlog = unresolved.iloc[0] if not unresolved.empty else None
+        rows.extend(
+            [
+                ("Backlog rows in scope", f"{len(unresolved):,}"),
+                ("Actioned recommendations", f"{actioned_count:,}"),
+                ("Realized monthly savings", money(realized_monthly)),
+                (
+                    "Top unresolved backlog item",
+                    "None"
+                    if top_backlog is None
+                    else f"{top_backlog['recommendation_id']} - {money(top_backlog['missed_savings_to_date'])} missed",
+                ),
+            ]
+        )
+        narrative = (
+            f"The recommendation backlog report is an operational export of prioritized findings. "
+            f"It includes {len(unresolved):,} open recommendations in the current filtered view, "
+            f"{actioned_count:,} actioned recommendations, and {money(realized_monthly)} in realized monthly savings. "
+            f"It is intended for execution planning rather than executive readout."
+        )
+    elif report_type == "Recommendation audit trail":
+        rows.extend(
+            [
+                ("Audit events in scope", f"{len(scan_report):,} scans tracked"),
+                ("Recommendation events included", "Use detail appendix / export tabs for full event log"),
+            ]
+        )
+        narrative = (
+            "The recommendation audit trail report is intended for workflow review, change tracking, and "
+            "implementation evidence. It focuses on recommendation events and supporting audit context."
+        )
     elif report_type == "Scan ROI history":
         successful_scans = int((scan_report["status"] == "SUCCEEDED").sum()) if "status" in scan_report else len(scan_report)
         avg_scan_cost = scan_report["scan_cost_usd"].mean() if not scan_report.empty else 0
@@ -1391,6 +1482,28 @@ def report_money_columns():
     ]
 
 
+def pdf_report_frame(df, columns, rename_map=None, limit=None):
+    rename_map = rename_map or {}
+    available = [column for column in columns if column in df.columns]
+    frame = df[available].copy()
+    if limit is not None:
+        frame = frame.head(limit)
+    if rename_map:
+        frame = frame.rename(columns=rename_map)
+    return frame
+
+
+def append_totals_row(df, label_column, label, sum_columns):
+    if df.empty:
+        return df
+    totals = {column: "" for column in df.columns}
+    totals[label_column] = label
+    for column in sum_columns:
+        if column in df.columns:
+            totals[column] = df[column].fillna(0).sum()
+    return pd.concat([df, pd.DataFrame([totals])], ignore_index=True)
+
+
 def build_excel_report(
     report_type,
     executive_narrative,
@@ -1405,6 +1518,9 @@ def build_excel_report(
     access_role_report,
     scan_report,
     backlog_export,
+    open_backlog_totals,
+    actioned_backlog_totals,
+    remediated_backlog_totals,
     event_view,
     selected_sections,
     report_detail,
@@ -1445,10 +1561,19 @@ def build_excel_report(
             access_role_report.to_excel(writer, sheet_name="Access Roles", index=False)
         if "Scan ROI history" in selected_sections:
             scan_report.to_excel(writer, sheet_name="Scan ROI", index=False)
-        backlog_export.head(limits["backlog"]).to_excel(writer, sheet_name="Backlog", index=False)
-        event_view.sort_values("event_ts", ascending=False).head(limits["audit"]).to_excel(
-            writer, sheet_name="Audit Log", index=False
-        )
+        if report_type == "Recommendation backlog":
+            open_backlog_totals.head(limits["backlog"] + 1).to_excel(writer, sheet_name="Open Backlog", index=False)
+            actioned_backlog_totals.head(limits["backlog"] + 1).to_excel(writer, sheet_name="Actioned", index=False)
+            remediated_backlog_totals.head(limits["backlog"] + 1).to_excel(writer, sheet_name="Remediated", index=False)
+        elif report_type == "Recommendation audit trail":
+            event_view.sort_values("event_ts", ascending=False).head(limits["audit"]).to_excel(
+                writer, sheet_name="Audit Log", index=False
+            )
+        else:
+            backlog_export.head(min(limits["backlog"], 25)).to_excel(writer, sheet_name="Backlog Snapshot", index=False)
+            event_view.sort_values("event_ts", ascending=False).head(min(limits["audit"], 25)).to_excel(
+                writer, sheet_name="Audit Snapshot", index=False
+            )
 
         for sheet_name, worksheet in writer.sheets.items():
             worksheet.freeze_panes(1, 0)
@@ -1473,6 +1598,9 @@ def build_excel_report(
             "Access Roles": access_role_report,
             "Scan ROI": scan_report,
             "Backlog": backlog_export,
+            "Open Backlog": open_backlog_totals,
+            "Actioned": actioned_backlog_totals,
+            "Remediated": remediated_backlog_totals,
         }.items():
             if sheet_name not in writer.sheets:
                 continue
@@ -1484,20 +1612,97 @@ def build_excel_report(
     return output.getvalue()
 
 
-def pdf_table(df, money_cols=None, percent_cols=None, limit=20, max_cols=8):
+def pdf_table(df, money_cols=None, percent_cols=None, limit=20, max_cols=None, available_width=None):
     display = format_export_frame(df, money_cols, percent_cols, limit=limit)
-    if len(display.columns) > max_cols:
+    if max_cols is not None and len(display.columns) > max_cols:
         display = display.iloc[:, :max_cols]
-    rows = [display.columns.tolist()] + display.astype(str).values.tolist()
-    table = Table(rows, repeatRows=1)
+    if available_width is None:
+        available_width = landscape(letter)[0] - 48
+
+    col_count = max(len(display.columns), 1)
+    if col_count <= 4:
+        font_size = 7.5
+        min_col_width = 72
+    elif col_count <= 7:
+        font_size = 6.5
+        min_col_width = 62
+    elif col_count <= 10:
+        font_size = 5.7
+        min_col_width = 52
+    else:
+        font_size = 5.2
+        min_col_width = 44
+
+    header_style = ParagraphStyle(
+        "ReportTableHeader",
+        fontName="Helvetica-Bold",
+        fontSize=font_size,
+        leading=font_size + 1.3,
+        textColor=colors.HexColor("#172033"),
+        wordWrap="CJK",
+        splitLongWords=True,
+    )
+    cell_style = ParagraphStyle(
+        "ReportTableCell",
+        fontName="Helvetica",
+        fontSize=font_size,
+        leading=font_size + 1.6,
+        textColor=colors.HexColor("#172033"),
+        wordWrap="CJK",
+        splitLongWords=True,
+    )
+
+    weight_map = []
+    for column in display.columns:
+        col_key = str(column).strip().lower()
+        weight = 1.0
+        if col_key in {"title", "description", "details", "work_notes"}:
+            weight = 2.7
+        elif col_key in {"recommendation_id", "status", "owner", "team", "role", "category", "subcategory", "event_type", "actor", "access_role"}:
+            weight = 1.15
+        elif col_key in {"event_ts", "started_at", "completed_at", "generated_at", "due_date", "first_seen_at"}:
+            weight = 1.3
+        elif "savings" in col_key or "cost" in col_key or "rate" in col_key or "confidence" in col_key:
+            weight = 1.05
+        elif col_key == "email":
+            weight = 1.5
+
+        sample_lengths = [len(str(column))]
+        for value in display[column].head(min(len(display), 12)).tolist():
+            sample_lengths.append(min(len(str(value)), 80))
+        density = max(sample_lengths) if sample_lengths else 12
+        if density > 36:
+            weight += 0.55
+        elif density > 24:
+            weight += 0.25
+        weight_map.append(weight)
+
+    total_weight = sum(weight_map) or 1
+    raw_widths = [(weight / total_weight) * available_width for weight in weight_map]
+    col_widths = [max(min_col_width, width) for width in raw_widths]
+    width_total = sum(col_widths)
+    if width_total > available_width:
+        scale = available_width / width_total
+        col_widths = [max(34, width * scale) for width in col_widths]
+
+    header_row = [Paragraph(escape(str(column)), header_style) for column in display.columns.tolist()]
+    data_rows = []
+    for _, row in display.astype(str).iterrows():
+        data_rows.append([Paragraph(escape(value), cell_style) for value in row.tolist()])
+
+    rows = [header_row] + data_rows
+    table = Table(rows, repeatRows=1, colWidths=col_widths)
     table.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8F1FA")),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D8DEE9")),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 7),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
             ]
         )
@@ -1521,12 +1726,37 @@ def build_pdf_report(
     access_role_report,
     scan_report,
     backlog_export,
+    open_backlog_totals,
+    actioned_backlog_totals,
+    remediated_backlog_totals,
     event_view,
     selected_sections,
     report_detail,
 ):
     money_columns = report_money_columns()
     limits = REPORT_DETAIL_LIMITS[report_detail]
+    rename_map = {
+        "recommendation_id": "Rec ID",
+        "projected_monthly_savings": "Proj Mo",
+        "projected_annual_savings": "Proj Yr",
+        "realized_monthly_savings": "Realized Mo",
+        "projected_daily_savings": "Daily Save",
+        "missed_savings": "Missed",
+        "missed_savings_to_date": "Missed",
+        "days_lingering": "Days Open",
+        "avg_days_open": "Avg Days",
+        "open_items": "Open",
+        "recommendations": "Recs",
+        "assigned_users": "Users",
+        "savings_per_scan_dollar": "Save per $1",
+        "scan_cost_usd": "Scan Cost",
+        "identified_monthly_savings": "Found Mo",
+        "recommendations_new": "New",
+        "recommendations_updated": "Updated",
+        "event_ts": "When",
+        "event_type": "Event",
+        "access_role": "Access Role",
+    }
     output = BytesIO()
     doc = SimpleDocTemplate(
         output,
@@ -1550,17 +1780,121 @@ def build_pdf_report(
 
     sections = []
     if "Savings by category" in selected_sections:
-        sections.append(("Savings by Category", category_report.sort_values("projected_monthly_savings", ascending=False)))
+        sections.append(
+            (
+                "Savings by Category",
+                pdf_report_frame(
+                    category_report.sort_values("projected_monthly_savings", ascending=False),
+                    [
+                        "category",
+                        "recommendations",
+                        "open_items",
+                        "projected_monthly_savings",
+                        "realized_monthly_savings",
+                        "missed_savings",
+                        "realization_rate",
+                    ],
+                    rename_map,
+                ),
+            )
+        )
     if "Savings by team" in selected_sections:
-        sections.append(("Savings by Team", team_report.sort_values("missed_savings", ascending=False)))
+        sections.append(
+            (
+                "Savings by Team",
+                pdf_report_frame(
+                    team_report.sort_values("missed_savings", ascending=False),
+                    [
+                        "team",
+                        "recommendations",
+                        "open_items",
+                        "projected_monthly_savings",
+                        "realized_monthly_savings",
+                        "missed_savings",
+                        "realization_rate",
+                    ],
+                    rename_map,
+                ),
+            )
+        )
     if "Recommendation lifecycle" in selected_sections:
-        sections.append(("Recommendation Lifecycle", lifecycle_report))
+        sections.append(
+            (
+                "Recommendation Lifecycle",
+                pdf_report_frame(
+                    lifecycle_report,
+                    [
+                        "status",
+                        "recommendations",
+                        "open_items",
+                        "projected_monthly_savings",
+                        "realized_monthly_savings",
+                        "missed_savings",
+                        "realization_rate",
+                    ],
+                    rename_map,
+                ),
+            )
+        )
     if "Unresolved opportunity" in selected_sections:
-        sections.append(("Unresolved Opportunity", unresolved))
+        sections.append(
+            (
+                "Unresolved Opportunity",
+                pdf_report_frame(
+                    unresolved,
+                    [
+                        "recommendation_id",
+                        "category",
+                        "owner",
+                        "team",
+                        "status",
+                        "projected_daily_savings",
+                        "missed_savings_to_date",
+                        "days_lingering",
+                    ],
+                    rename_map,
+                ),
+            )
+        )
     if "Owner accountability" in selected_sections:
-        sections.append(("Owner Accountability", owner_report.sort_values("missed_savings", ascending=False)))
+        sections.append(
+            (
+                "Owner Accountability",
+                pdf_report_frame(
+                    owner_report.sort_values("missed_savings", ascending=False),
+                    [
+                        "owner",
+                        "team",
+                        "recommendations",
+                        "open_items",
+                        "projected_monthly_savings",
+                        "realized_monthly_savings",
+                        "missed_savings",
+                        "avg_days_open",
+                    ],
+                    rename_map,
+                ),
+            )
+        )
     if "Scan ROI history" in selected_sections:
-        sections.append(("Scan ROI History", scan_report.sort_values("started_at", ascending=False)))
+        sections.append(
+            (
+                "Scan ROI History",
+                pdf_report_frame(
+                    scan_report.sort_values("started_at", ascending=False),
+                    [
+                        "started_at",
+                        "status",
+                        "recommendations_new",
+                        "recommendations_updated",
+                        "scan_cost_usd",
+                        "identified_monthly_savings",
+                        "savings_per_scan_dollar",
+                    ],
+                    rename_map,
+                ),
+            )
+        )
 
     include_users_roles = "Users and roles" in selected_sections
 
@@ -1581,13 +1915,42 @@ def build_pdf_report(
             [
                 Paragraph("Users and Roles", styles["Heading2"]),
                 Paragraph("Team Coverage", styles["Heading3"]),
-                pdf_table(team_coverage_report, money_columns, limit=limits["section"]),
+                pdf_table(
+                    pdf_report_frame(
+                        team_coverage_report,
+                        [
+                            "team",
+                            "assigned_users",
+                            "recommendations",
+                            "open_items",
+                            "projected_monthly_savings",
+                            "missed_savings",
+                            "realization_rate",
+                        ],
+                        rename_map,
+                    ),
+                    money_columns,
+                    ["realization_rate"],
+                    limit=limits["section"],
+                ),
                 Spacer(1, 8),
                 Paragraph("User Directory", styles["Heading3"]),
-                pdf_table(directory_report, limit=limits["section"], max_cols=5),
+                pdf_table(
+                    pdf_report_frame(
+                        directory_report,
+                        ["owner", "team", "role", "access_role", "email"],
+                        rename_map,
+                    ),
+                    limit=limits["section"],
+                    max_cols=5,
+                ),
                 Spacer(1, 8),
                 Paragraph("Access Role Coverage", styles["Heading3"]),
-                pdf_table(access_role_report, limit=limits["section"], max_cols=2),
+                pdf_table(
+                    pdf_report_frame(access_role_report, ["access_role", "users"], rename_map),
+                    limit=limits["section"],
+                    max_cols=2,
+                ),
                 Spacer(1, 10),
             ]
         )
@@ -1597,13 +1960,143 @@ def build_pdf_report(
     else:
         story.append(Spacer(1, 12))
 
+    if report_type == "Recommendation backlog":
+        story.extend(
+            [
+                Paragraph("Open Recommendation Backlog", styles["Heading2"]),
+                pdf_table(
+                    pdf_report_frame(
+                        open_backlog_totals,
+                        [
+                            "recommendation_id",
+                            "severity",
+                            "category",
+                            "owner",
+                            "status",
+                            "projected_monthly_savings",
+                            "missed_savings_to_date",
+                        "days_lingering",
+                    ],
+                    rename_map,
+                ),
+                money_columns,
+                    limit=limits["backlog"] + 1,
+                ),
+                Spacer(1, 8),
+                Paragraph("Actioned Recommendations", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        actioned_backlog_totals,
+                        [
+                            "recommendation_id",
+                            "category",
+                            "owner",
+                            "team",
+                            "status",
+                            "accepted_at",
+                            "implemented_at",
+                            "projected_monthly_savings",
+                            "realized_monthly_savings",
+                        ],
+                        rename_map,
+                    ),
+                    money_columns,
+                    limit=limits["backlog"] + 1,
+                ),
+                Spacer(1, 8),
+                Paragraph("Implemented / Realized Recommendations", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        remediated_backlog_totals,
+                        [
+                            "recommendation_id",
+                            "category",
+                            "owner",
+                            "team",
+                            "status",
+                            "implemented_at",
+                            "projected_monthly_savings",
+                            "realized_monthly_savings",
+                        ],
+                        rename_map,
+                    ),
+                    money_columns,
+                    limit=limits["backlog"] + 1,
+                ),
+                Spacer(1, 8),
+                Paragraph("Recommendation Title Appendix", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        backlog_export,
+                        ["recommendation_id", "subcategory", "title"],
+                        rename_map,
+                    ),
+                    limit=min(limits["backlog"], 80),
+                    max_cols=3,
+                ),
+            ]
+        )
+    elif report_type == "Recommendation audit trail":
+        story.extend(
+            [
+                Paragraph("Audit Log Summary", styles["Heading2"]),
+                pdf_table(
+                    pdf_report_frame(
+                        event_view.sort_values("event_ts", ascending=False),
+                        ["event_ts", "recommendation_id", "event_type", "actor", "owner", "team"],
+                        rename_map,
+                    ),
+                    limit=limits["audit"],
+                ),
+                Spacer(1, 8),
+                Paragraph("Audit Detail Appendix", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        event_view.sort_values("event_ts", ascending=False),
+                        ["recommendation_id", "title", "details"],
+                        rename_map,
+                    ),
+                    limit=min(limits["audit"], 80),
+                    max_cols=3,
+                ),
+            ]
+        )
+    else:
+        story.extend(
+            [
+                Paragraph("Recommendation Backlog Snapshot", styles["Heading2"]),
+                pdf_table(
+                    pdf_report_frame(
+                        backlog_export,
+                        [
+                            "recommendation_id",
+                            "severity",
+                            "category",
+                            "owner",
+                            "status",
+                            "projected_monthly_savings",
+                            "missed_savings_to_date",
+                        ],
+                        rename_map,
+                    ),
+                    money_columns,
+                    limit=min(limits["backlog"], 20),
+                ),
+                Spacer(1, 8),
+                Paragraph("Audit Snapshot", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        event_view.sort_values("event_ts", ascending=False),
+                        ["event_ts", "recommendation_id", "event_type", "actor"],
+                        rename_map,
+                    ),
+                    limit=min(limits["audit"], 20),
+                ),
+            ]
+        )
+
     story.extend(
         [
-            Paragraph("Recommendation Backlog Detail", styles["Heading2"]),
-            pdf_table(backlog_export, money_columns, limit=limits["backlog"]),
-            Spacer(1, 10),
-            Paragraph("Audit Log Evidence", styles["Heading2"]),
-            pdf_table(event_view.sort_values("event_ts", ascending=False), limit=limits["audit"]),
             Spacer(1, 12),
             Paragraph(f"Downloaded/generated timestamp: {generated_at.strftime('%Y-%m-%d %I:%M %p %Z')}", styles["Normal"]),
         ]
@@ -1631,6 +2124,9 @@ def build_finance_packet_html(
     access_role_report,
     scan_report,
     backlog_export,
+    open_backlog_totals,
+    actioned_backlog_totals,
+    remediated_backlog_totals,
     event_view,
     selected_sections,
     report_detail,
@@ -1885,10 +2381,12 @@ def build_finance_packet_html(
   {owner_section}
   {users_roles_section}
   {scan_section}
-  <h2>Recommendation Backlog Detail</h2>
-  {format_report_table(backlog_export, money_columns, limit=limits["backlog"])}
-  <h2>Audit Log Evidence</h2>
-  {format_report_table(event_view.sort_values("event_ts", ascending=False), limit=limits["audit"])}
+  <h2>{'Open Recommendation Backlog' if report_type == 'Recommendation backlog' else 'Recommendation Backlog Snapshot'}</h2>
+  {format_report_table((open_backlog_totals if report_type == 'Recommendation backlog' else backlog_export), money_columns, limit=((limits["backlog"] + 1) if report_type == 'Recommendation backlog' else min(limits["backlog"], 25)))}
+  {'<h2>Actioned Recommendations</h2>' + format_report_table(actioned_backlog_totals, money_columns, limit=limits["backlog"] + 1) if report_type == 'Recommendation backlog' else ''}
+  {'<h2>Implemented / Realized Recommendations</h2>' + format_report_table(remediated_backlog_totals, money_columns, limit=limits["backlog"] + 1) if report_type == 'Recommendation backlog' else ''}
+  <h2>{'Audit Log Evidence' if report_type == 'Recommendation audit trail' else 'Audit Snapshot'}</h2>
+  {format_report_table(event_view.sort_values("event_ts", ascending=False), limit=(limits["audit"] if report_type == 'Recommendation audit trail' else min(limits["audit"], 25)))}
   <div class="footer">Downloaded/generated timestamp: {escape(generated_ts)}</div>
 </body>
 </html>"""
@@ -1911,6 +2409,8 @@ def reports_page():
                 "Owner accountability",
                 "Users and roles",
                 "Scan ROI history",
+                "Recommendation backlog",
+                "Recommendation audit trail",
                 "Custom report",
             ],
         )
@@ -2091,6 +2591,8 @@ def reports_page():
         "owner",
         "team",
         "status",
+        "accepted_at",
+        "implemented_at",
         "projected_daily_savings",
         "projected_monthly_savings",
         "projected_annual_savings",
@@ -2101,6 +2603,63 @@ def reports_page():
         "effort",
     ]
     backlog_export = page_recs[backlog_cols].sort_values("missed_savings_to_date", ascending=False)
+    open_backlog_report = backlog_export[~backlog_export["status"].isin(["Implemented", "Realized", "Rejected"])].copy()
+    actioned_backlog_report = backlog_export[backlog_export["status"].isin(["Accepted", "Implemented", "Realized"])].copy()
+    remediated_backlog_report = backlog_export[backlog_export["status"].isin(["Implemented", "Realized"])].copy()
+
+    open_backlog_totals = append_totals_row(
+        open_backlog_report[
+            [
+                "recommendation_id",
+                "severity",
+                "category",
+                "owner",
+                "status",
+                "projected_monthly_savings",
+                "projected_annual_savings",
+                "missed_savings_to_date",
+                "days_lingering",
+            ]
+        ],
+        "recommendation_id",
+        "Totals",
+        ["projected_monthly_savings", "projected_annual_savings", "missed_savings_to_date"],
+    )
+    actioned_backlog_totals = append_totals_row(
+        actioned_backlog_report[
+            [
+                "recommendation_id",
+                "category",
+                "owner",
+                "team",
+                "status",
+                "accepted_at",
+                "implemented_at",
+                "projected_monthly_savings",
+                "realized_monthly_savings",
+            ]
+        ],
+        "recommendation_id",
+        "Totals",
+        ["projected_monthly_savings", "realized_monthly_savings"],
+    )
+    remediated_backlog_totals = append_totals_row(
+        remediated_backlog_report[
+            [
+                "recommendation_id",
+                "category",
+                "owner",
+                "team",
+                "status",
+                "implemented_at",
+                "projected_monthly_savings",
+                "realized_monthly_savings",
+            ]
+        ],
+        "recommendation_id",
+        "Totals",
+        ["projected_monthly_savings", "realized_monthly_savings"],
+    )
     event_view = recommendation_events.merge(
         recommendations[["recommendation_id", "category", "owner", "team", "title"]],
         on="recommendation_id",
@@ -2165,11 +2724,14 @@ def reports_page():
             directory_report,
             team_coverage_report,
             access_role_report,
-            scan_report,
-            backlog_export,
-            event_view,
-            selected_sections,
-            report_detail,
+        scan_report,
+        backlog_export,
+        open_backlog_totals,
+        actioned_backlog_totals,
+        remediated_backlog_totals,
+        event_view,
+        selected_sections,
+        report_detail,
         )
         download_extension = "pdf"
         download_mime = "application/pdf"
@@ -2186,11 +2748,14 @@ def reports_page():
             directory_report,
             team_coverage_report,
             access_role_report,
-            scan_report,
-            backlog_export,
-            event_view,
-            selected_sections,
-            report_detail,
+        scan_report,
+        backlog_export,
+        open_backlog_totals,
+        actioned_backlog_totals,
+        remediated_backlog_totals,
+        event_view,
+        selected_sections,
+        report_detail,
         )
         download_extension = "xlsx"
         download_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -2217,11 +2782,14 @@ def reports_page():
             directory_report,
             team_coverage_report,
             access_role_report,
-            scan_report,
-            backlog_export,
-            event_view,
-            selected_sections,
-            report_detail,
+        scan_report,
+        backlog_export,
+        open_backlog_totals,
+        actioned_backlog_totals,
+        remediated_backlog_totals,
+        event_view,
+        selected_sections,
+        report_detail,
         )
         download_extension = "html"
         download_mime = "text/html"
@@ -2532,6 +3100,43 @@ def reports_page():
                 "scan_cost_usd": st.column_config.NumberColumn("Scan Cost", format="$%d"),
                 "identified_monthly_savings": st.column_config.NumberColumn("Identified Monthly Savings", format="$%d"),
                 "savings_per_scan_dollar": st.column_config.NumberColumn("Savings per $1 Scan Cost", format="$%d"),
+            },
+        )
+
+    if report_type == "Recommendation backlog":
+        st.subheader("Open Recommendation Backlog")
+        st.dataframe(
+            open_backlog_totals,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "projected_monthly_savings": st.column_config.NumberColumn("Projected Monthly", format="$%d"),
+                "projected_annual_savings": st.column_config.NumberColumn("Projected Annual", format="$%d"),
+                "missed_savings_to_date": st.column_config.NumberColumn("Missed Savings", format="$%d"),
+                "days_lingering": st.column_config.NumberColumn("Days Open", format="%d"),
+            },
+        )
+        st.subheader("Actioned Recommendations")
+        st.dataframe(
+            actioned_backlog_totals,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "accepted_at": st.column_config.DatetimeColumn("Accepted At", format="YYYY-MM-DD"),
+                "implemented_at": st.column_config.DatetimeColumn("Implemented At", format="YYYY-MM-DD"),
+                "projected_monthly_savings": st.column_config.NumberColumn("Projected Monthly", format="$%d"),
+                "realized_monthly_savings": st.column_config.NumberColumn("Realized Monthly", format="$%d"),
+            },
+        )
+        st.subheader("Implemented / Realized Recommendations")
+        st.dataframe(
+            remediated_backlog_totals,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "implemented_at": st.column_config.DatetimeColumn("Implemented At", format="YYYY-MM-DD"),
+                "projected_monthly_savings": st.column_config.NumberColumn("Projected Monthly", format="$%d"),
+                "realized_monthly_savings": st.column_config.NumberColumn("Realized Monthly", format="$%d"),
             },
         )
 
