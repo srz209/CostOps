@@ -431,6 +431,50 @@ st.markdown(
         font-weight: 800;
         margin-bottom: 0.45rem;
     }
+    .costops-entitlement-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.75rem;
+        margin: 0.65rem 0 1rem 0;
+    }
+    .costops-entitlement-card {
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        padding: 0.85rem;
+        background: #ffffff;
+        min-height: 7.25rem;
+    }
+    .costops-entitlement-card.locked {
+        background: #f8fafc;
+        border-style: dashed;
+    }
+    .costops-entitlement-title {
+        color: #0f172a;
+        font-weight: 800;
+        font-size: 0.9rem;
+        margin-bottom: 0.25rem;
+    }
+    .costops-entitlement-copy {
+        color: #475569;
+        font-size: 0.8rem;
+        line-height: 1.15rem;
+    }
+    .costops-entitlement-state {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 0.12rem 0.45rem;
+        font-size: 0.68rem;
+        font-weight: 800;
+        margin-top: 0.55rem;
+        color: #166534;
+        background: #dcfce7;
+        border: 1px solid #86efac;
+    }
+    .costops-entitlement-state.locked {
+        color: #92400e;
+        background: #fef3c7;
+        border-color: #fcd34d;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -491,6 +535,7 @@ COSTOPS_PLAN_ENTITLEMENTS = {
         "workflow": "Single admin",
         "support": "Community / self-serve",
         "cta": "Current Plan",
+        "features": {"basic_workflow", "manual_scans"},
     },
     "Team": {
         "price": "$749 / month",
@@ -504,6 +549,7 @@ COSTOPS_PLAN_ENTITLEMENTS = {
         "workflow": "Owners, teams, and due dates",
         "support": "Standard support",
         "cta": "Upgrade Through Marketplace",
+        "features": {"basic_workflow", "manual_scans", "team_workflow", "scheduled_scans"},
     },
     "Business / Pro": {
         "price": "$2,499 / month",
@@ -517,6 +563,14 @@ COSTOPS_PLAN_ENTITLEMENTS = {
         "workflow": "Audit trail and savings realization",
         "support": "Priority support",
         "cta": "Upgrade Through Marketplace",
+        "features": {
+            "basic_workflow",
+            "manual_scans",
+            "team_workflow",
+            "scheduled_scans",
+            "savings_realization",
+            "advanced_reports",
+        },
     },
     "Enterprise": {
         "price": "$6,000 / month",
@@ -530,6 +584,46 @@ COSTOPS_PLAN_ENTITLEMENTS = {
         "workflow": "Dedicated persistence, SSO, RBAC, SLA",
         "support": "Dedicated success path",
         "cta": "Select Enterprise",
+        "features": {
+            "basic_workflow",
+            "manual_scans",
+            "team_workflow",
+            "scheduled_scans",
+            "savings_realization",
+            "advanced_reports",
+            "enterprise_controls",
+            "sso",
+            "rbac",
+            "dedicated_persistence",
+            "sla",
+            "linked_dev_test",
+        },
+    },
+}
+ENTERPRISE_CONTROL_FEATURES = {
+    "sso": {
+        "title": "SSO & Identity",
+        "copy": "Configure SAML/OIDC metadata, domain allowlists, and identity-provider handoff for enterprise sign-in.",
+    },
+    "rbac": {
+        "title": "RBAC Mapping",
+        "copy": "Map Snowflake/application roles to CostOps Admin, Operator, and Viewer permissions.",
+    },
+    "dedicated_persistence": {
+        "title": "Dedicated Persistence",
+        "copy": "Track isolated Postgres storage, retention, backup status, and tenant-specific connection health.",
+    },
+    "sla": {
+        "title": "SLA & Support",
+        "copy": "Show the active support tier, response window, deployment owner, and escalation path.",
+    },
+    "linked_dev_test": {
+        "title": "Linked Dev/Test",
+        "copy": "Register dev and test Snowflake accounts for validating configuration before production rollout.",
+    },
+    "enterprise_controls": {
+        "title": "Production Instance",
+        "copy": "Record the production Snowflake account locator, region, account role, and installed app instance.",
     },
 }
 
@@ -3987,6 +4081,15 @@ def current_costops_plan():
     return plan_name, COSTOPS_PLAN_ENTITLEMENTS[plan_name]
 
 
+def current_entitlements():
+    _, plan = current_costops_plan()
+    return set(plan.get("features", set()))
+
+
+def has_entitlement(feature_name):
+    return feature_name in current_entitlements()
+
+
 def set_costops_plan(plan_name):
     if plan_name in COSTOPS_PLAN_ENTITLEMENTS:
         st.session_state["costops_plan_name"] = plan_name
@@ -3998,6 +4101,24 @@ def warehouse_observed_count(warehouse_frame):
     if "warehouse_name" in warehouse_frame.columns:
         return int(warehouse_frame["warehouse_name"].nunique())
     return int(len(warehouse_frame))
+
+
+def numeric_plan_limit(limit_text):
+    first_token = str(limit_text).split(" ", 1)[0].replace(",", "")
+    return int(first_token) if first_token.isdigit() else None
+
+
+def usage_limit_warnings(plan, warehouse_count, recommendation_count):
+    warnings = []
+    warehouse_limit = numeric_plan_limit(plan["warehouses"])
+    recommendation_limit = numeric_plan_limit(plan["recommendations"])
+    if warehouse_limit is not None and warehouse_count > warehouse_limit:
+        warnings.append(f"{warehouse_count} warehouses observed exceeds the included {warehouse_limit} warehouses.")
+    if recommendation_limit is not None and recommendation_count > recommendation_limit:
+        warnings.append(
+            f"{recommendation_count} active recommendations observed exceeds the included {recommendation_limit} recommendations."
+        )
+    return warnings
 
 
 def render_sidebar_plan_status(recommendation_count, warehouse_count):
@@ -4074,6 +4195,11 @@ def upgrade_plan_page():
         """,
         unsafe_allow_html=True,
     )
+    for warning in usage_limit_warnings(active_plan, warehouse_count, recommendation_count):
+        st.warning(
+            warning
+            + " Existing history is preserved, but new scans should be reduced in scope or upgraded before production use."
+        )
 
     st.markdown(
         """
@@ -4152,6 +4278,91 @@ def _render_costops_marketplace_workflow():
     )
 
 
+def enterprise_controls_page():
+    plan_name, plan = current_costops_plan()
+    enterprise_unlocked = has_entitlement("enterprise_controls")
+
+    st.title("Enterprise Controls")
+    st.caption(
+        "Enterprise-only controls for identity, role mapping, dedicated persistence, "
+        "support commitments, and production-instance governance."
+    )
+
+    if not enterprise_unlocked:
+        st.warning(
+            f"Enterprise Controls are locked on the {plan_name} plan. "
+            "Upgrade to Enterprise to activate SSO, RBAC mapping, dedicated persistence, SLA tracking, "
+            "and linked dev/test validation."
+        )
+        st.link_button("Review Enterprise Plan", "/upgrade_plan", type="primary")
+        st.subheader("Enterprise Feature Status")
+        _render_enterprise_feature_grid(locked=True)
+        return
+
+    st.success(
+        f"Enterprise is active at {plan['price']} for one production Snowflake account. "
+        "The controls below represent the enterprise configuration surface."
+    )
+    st.info(
+        "Demo note: these controls model the Enterprise workflow. Full SSO, persistence provisioning, "
+        "and marketplace entitlement sync still need production integrations."
+    )
+
+    st.subheader("Enterprise Feature Status")
+    _render_enterprise_feature_grid(locked=False)
+
+    st.subheader("Production Instance")
+    instance_cols = st.columns(3)
+    with instance_cols[0]:
+        st.text_input("Production Snowflake account", placeholder="ORG-ACCOUNT", key="enterprise_prod_account")
+    with instance_cols[1]:
+        st.text_input("Region", placeholder="AWS us-east-1", key="enterprise_prod_region")
+    with instance_cols[2]:
+        st.text_input("Installed app instance", placeholder="GRAINAI_COSTOPS_PROD", key="enterprise_app_instance")
+
+    st.subheader("SSO & RBAC")
+    identity_cols = st.columns(2)
+    with identity_cols[0]:
+        st.selectbox("SSO provider", ["Not configured", "Okta", "Microsoft Entra ID", "Ping Identity", "Other"], key="enterprise_sso_provider")
+        st.text_input("Allowed email domain", placeholder="company.com", key="enterprise_allowed_domain")
+    with identity_cols[1]:
+        st.selectbox("Default CostOps role", ACCESS_ROLES, key="enterprise_default_role")
+        st.text_area(
+            "Role mapping notes",
+            placeholder="Example: SNOWFLAKE_FINOPS_ADMIN -> CostOps Admin",
+            key="enterprise_role_mapping_notes",
+        )
+
+    st.subheader("Dedicated Persistence")
+    persistence_cols = st.columns(3)
+    with persistence_cols[0]:
+        st.selectbox("Persistence status", ["Planned", "Provisioned", "Healthy", "Action needed"], key="enterprise_persistence_status")
+    with persistence_cols[1]:
+        st.selectbox("Retention", ["12 months", "24 months", "36 months", "Custom"], key="enterprise_retention")
+    with persistence_cols[2]:
+        st.selectbox("Backup status", ["Not configured", "Daily", "Hourly", "Custom"], key="enterprise_backup_status")
+
+
+def _render_enterprise_feature_grid(locked):
+    cards = []
+    for feature_name, metadata in ENTERPRISE_CONTROL_FEATURES.items():
+        enabled = has_entitlement(feature_name) and not locked
+        card_class = "costops-entitlement-card" if enabled else "costops-entitlement-card locked"
+        state_class = "costops-entitlement-state" if enabled else "costops-entitlement-state locked"
+        state_text = "Unlocked" if enabled else "Enterprise"
+        cards.append(
+            f'<div class="{card_class}">'
+            f'<div class="costops-entitlement-title">{escape(metadata["title"])}</div>'
+            f'<div class="costops-entitlement-copy">{escape(metadata["copy"])}</div>'
+            f'<span class="{state_class}">{state_text}</span>'
+            "</div>"
+        )
+    st.markdown(
+        '<div class="costops-entitlement-grid">' + "".join(cards) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 navigation_pages = {
     "Command Center": [
         st.Page(overview, title="Overview", icon=":material/space_dashboard:", default=True),
@@ -4171,6 +4382,7 @@ navigation_pages = {
     ],
     "Admin": [
         st.Page(upgrade_plan_page, title="Upgrade Plan", icon=":material/workspace_premium:", url_path="upgrade_plan"),
+        st.Page(enterprise_controls_page, title="Enterprise Controls", icon=":material/admin_panel_settings:", url_path="enterprise_controls"),
         st.Page(users_roles_page, title="Users and Roles", icon=":material/group:"),
         st.Page(settings_page, title="Settings", icon=":material/settings:"),
     ],
