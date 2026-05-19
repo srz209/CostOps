@@ -35,6 +35,14 @@ DEFAULT_APP_SETTINGS = {
     "due_days_high": 14,
     "due_days_medium": 30,
     "due_days_low": 45,
+    "user_directory": [
+        {"owner": "Jordan Lee", "team": "Data Platform", "role": "Platform Architect"},
+        {"owner": "Sam Rivera", "team": "Data Platform", "role": "Platform Engineer"},
+        {"owner": "Avery Patel", "team": "Data Engineering", "role": "Data Engineer"},
+        {"owner": "Riley Chen", "team": "Analytics Engineering", "role": "Analytics Engineer"},
+        {"owner": "Morgan Brooks", "team": "Business Intelligence", "role": "BI Lead"},
+        {"owner": "Casey Nguyen", "team": "Data Governance", "role": "Governance Lead"},
+    ],
 }
 
 
@@ -78,3 +86,16 @@ def due_days_by_severity(settings=None):
         "Medium": int(settings["due_days_medium"]),
         "Low": int(settings["due_days_low"]),
     }
+
+
+def user_directory_frame(settings=None):
+    settings = settings or load_app_settings()
+    directory = settings.get("user_directory", [])
+    if not directory:
+        directory = DEFAULT_APP_SETTINGS["user_directory"]
+    return directory
+
+
+def user_lookup_map(settings=None):
+    directory = user_directory_frame(settings)
+    return {entry["owner"]: {"team": entry["team"], "role": entry["role"]} for entry in directory}

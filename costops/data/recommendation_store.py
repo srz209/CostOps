@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from costops.data.app_settings_store import due_days_by_severity
+from costops.data.app_settings_store import due_days_by_severity, user_lookup_map
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_STATE_DIR = ROOT / "runtime_state"
@@ -143,11 +143,16 @@ def update_recommendation_status(session_state, recommendation_id, new_status, a
     return True
 
 
-def update_recommendation_assignment(session_state, recommendation_id, owner, team, role, due_date, notes, actor, as_of_date):
+def update_recommendation_assignment(session_state, recommendation_id, owner, due_date, notes, actor, as_of_date):
     workflow = ensure_recommendation_columns(session_state[RECOMMENDATION_STATE_KEY].copy())
     mask = workflow["recommendation_id"] == recommendation_id
     if not mask.any():
         return False
+
+    directory = user_lookup_map(session_state.get("costops_app_settings"))
+    owner_profile = directory.get(owner, {})
+    team = owner_profile.get("team", workflow.loc[mask, "team"].iloc[0])
+    role = owner_profile.get("role", workflow.loc[mask, "role"].iloc[0])
 
     now = pd.Timestamp(as_of_date).normalize() + pd.Timedelta(hours=12)
     current = workflow.loc[mask].iloc[0]

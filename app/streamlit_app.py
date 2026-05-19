@@ -16,7 +16,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from costops.data.app_settings_store import current_app_settings, initialize_app_settings, persist_app_settings
+from costops.data.app_settings_store import (
+    current_app_settings,
+    initialize_app_settings,
+    persist_app_settings,
+    user_directory_frame,
+    user_lookup_map,
+)
 from costops.data.sample_loader import load_sample_data
 from costops.data.recommendation_store import (
     initialize_session_store,
@@ -544,27 +550,28 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
         st.write(rec["evidence"])
         with st.container(border=True):
             st.caption("Assignment")
-            assignment_cols = st.columns([1.05, 1.05, 1.05, 0.9])
-            owner_choices = sorted(recommendations["owner"].dropna().unique().tolist())
-            team_choices = sorted(recommendations["team"].dropna().unique().tolist())
-            role_choices = sorted(recommendations["role"].dropna().unique().tolist())
+            directory_lookup = user_lookup_map(current_app_settings(st.session_state))
+            owner_choices = sorted(directory_lookup.keys())
+            owner_profile = directory_lookup.get(rec["owner"], {"team": rec["team"], "role": rec["role"]})
+            assignment_cols = st.columns([1.2, 1.0, 1.0, 0.9])
             assigned_owner = assignment_cols[0].selectbox(
                 "Owner",
                 owner_choices,
                 index=owner_choices.index(rec["owner"]),
                 key=f"{selected_recommendation_id}_owner",
             )
-            assigned_team = assignment_cols[1].selectbox(
+            selected_profile = directory_lookup.get(assigned_owner, owner_profile)
+            assignment_cols[1].text_input(
                 "Team",
-                team_choices,
-                index=team_choices.index(rec["team"]),
+                value=selected_profile["team"],
                 key=f"{selected_recommendation_id}_team",
+                disabled=True,
             )
-            assigned_role = assignment_cols[2].selectbox(
+            assignment_cols[2].text_input(
                 "Role",
-                role_choices,
-                index=role_choices.index(rec["role"]),
+                value=selected_profile["role"],
                 key=f"{selected_recommendation_id}_role",
+                disabled=True,
             )
             due_date = assignment_cols[3].date_input(
                 "Due date",
@@ -591,8 +598,6 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
                     st.session_state,
                     selected_recommendation_id,
                     assigned_owner,
-                    assigned_team,
-                    assigned_role,
                     due_date,
                     notes,
                     assigned_owner,
@@ -2508,6 +2513,50 @@ def settings_page():
         columns=["Application Role", "Typical User", "Scope"],
     )
     st.dataframe(access_model, use_container_width=True, hide_index=True)
+
+    st.subheader("Users and Roles")
+    directory = pd.DataFrame(user_directory_frame(settings))
+    st.dataframe(directory, use_container_width=True, hide_index=True)
+    team_seed = sorted(directory["team"].dropna().unique().tolist()) if not directory.empty else sorted(recommendations["team"].dropna().unique().tolist())
+    if not team_seed:
+        team_seed = ["Data Platform"]
+
+    user_cols = st.columns([1.2, 1.1, 1.1, 0.9])
+    new_owner = user_cols[0].text_input("User name", value="", placeholder="Enter person name")
+    new_team = user_cols[1].selectbox(
+        "Assigned team",
+        team_seed,
+        index=0,
+        key="settings_user_team",
+    )
+    new_role = user_cols[2].text_input("Assigned role", value="", placeholder="Team role")
+    action_choice = user_cols[3].selectbox("Action", ["Add / update", "Remove"], key="settings_user_action")
+
+    if has_permission("admin"):
+        if st.button("Save user directory", type="primary"):
+            current_directory = user_directory_frame(settings)
+            updated_directory = [dict(entry) for entry in current_directory]
+            if new_owner.strip():
+                existing = next((entry for entry in updated_directory if entry["owner"] == new_owner.strip()), None)
+                if action_choice == "Remove":
+                    updated_directory = [entry for entry in updated_directory if entry["owner"] != new_owner.strip()]
+                else:
+                    payload = {
+                        "owner": new_owner.strip(),
+                        "team": new_team,
+                        "role": new_role.strip() or "Contributor",
+                    }
+                    if existing:
+                        existing.update(payload)
+                    else:
+                        updated_directory.append(payload)
+                persist_app_settings(st.session_state, {"user_directory": updated_directory})
+                st.success("User directory updated.")
+                st.rerun()
+            else:
+                st.warning("Enter a user name before saving the directory.")
+    else:
+        st.caption("Viewer and operator roles can review the directory, but only admins can change it.")
 
     st.subheader("Rule Catalog")
     rules = pd.DataFrame(RULE_CATALOG)
