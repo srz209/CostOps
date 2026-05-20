@@ -26,6 +26,11 @@ from costops.data.app_settings_store import (
     user_directory_frame,
     user_lookup_map,
 )
+from costops.data.enterprise_audit_store import (
+    enterprise_audit_frame,
+    initialize_enterprise_audit_store,
+    log_enterprise_audit_event,
+)
 from costops.data.sample_loader import load_sample_data
 from costops.data.recommendation_store import (
     initialize_session_store,
@@ -141,14 +146,16 @@ st.markdown(
     }
     .compact-title {
         font-size: 1rem;
-        font-weight: 600;
-        margin: 0.25rem 0 0.15rem 0;
-        display: inline-block;
-        padding: 0.22rem 0.55rem;
-        border-radius: 6px;
-        background: #fef3c7;
-        border: 1px solid #fcd34d;
-        color: #92400e;
+        font-weight: 700;
+        margin: 0.25rem 0 0.2rem 0;
+        display: block;
+        width: 100%;
+        padding: 0.48rem 0.7rem;
+        border-radius: 8px;
+        background: #fde68a;
+        border: 1px solid #f59e0b;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+        color: #78350f;
     }
     .compact-meta {
         font-size: 0.78rem;
@@ -495,6 +502,8 @@ REPORT_SECTION_OPTIONS = [
     "Owner accountability",
     "Users and roles",
     "Scan ROI history",
+    "Enterprise readiness",
+    "Enterprise config audit",
 ]
 REPORT_PRESETS = {
     "Comprehensive finance packet": REPORT_SECTION_OPTIONS,
@@ -506,9 +515,11 @@ REPORT_PRESETS = {
     "Owner accountability": ["Owner accountability", "Users and roles"],
     "Users and roles": ["Users and roles", "Owner accountability"],
     "Scan ROI history": ["Scan ROI history"],
+    "Enterprise readiness": ["Enterprise readiness"],
+    "Enterprise config audit trail": ["Enterprise config audit"],
     "Recommendation backlog": [],
     "Recommendation audit trail": [],
-    "Custom report": ["Savings by category", "Savings by team", "Recommendation lifecycle", "Users and roles"],
+    "Custom report": ["Savings by category", "Savings by team", "Recommendation lifecycle", "Users and roles", "Enterprise readiness", "Enterprise config audit"],
 }
 REPORT_DETAIL_LIMITS = {
     "Summary only": {"backlog": 10, "audit": 10, "section": 10},
@@ -626,6 +637,9 @@ ENTERPRISE_CONTROL_FEATURES = {
         "copy": "Record the production Snowflake account locator, region, account role, and installed app instance.",
     },
 }
+ENTERPRISE_STATUS_OPTIONS = ["Not configured", "Ready for validation", "Active", "Action needed"]
+ENTERPRISE_SUPPORT_TIERS = ["Enterprise standard", "Priority", "Named success manager", "Custom"]
+ENTERPRISE_RESPONSE_WINDOWS = ["4 business hours", "Next business day", "24x7 severity 1", "Custom"]
 
 
 @st.cache_data
@@ -645,17 +659,70 @@ def get_snowflake_config():
         return {}
 
 
+def current_role_context(settings=None):
+    settings = settings or current_app_settings(st.session_state)
+    simulation_mode = st.session_state.get("access_simulation_mode", "Manual role")
+    source_role = st.session_state.get("current_source_role", "Default fallback")
+    manual_role = st.session_state.get("current_access_role", ACCESS_ROLES[0])
+    default_role = settings.get("enterprise_default_role", ACCESS_ROLES[0])
+    mappings = pd.DataFrame(settings.get("enterprise_role_mappings", []))
+
+    resolved_role = manual_role
+    mapping_status = "Manual override"
+    mapping_scope = "Direct session role selection."
+
+    if simulation_mode == "Source role mapping":
+        if source_role == "Default fallback":
+            resolved_role = default_role
+            mapping_status = settings.get("enterprise_rbac_status", "Not configured")
+            mapping_scope = "Fallback role applied when no explicit mapping exists."
+        elif not mappings.empty and source_role in mappings["source_role"].tolist():
+            mapped = mappings[mappings["source_role"] == source_role].iloc[0].to_dict()
+            resolved_role = mapped.get("costops_role", default_role)
+            mapping_status = mapped.get("status", "Not configured")
+            mapping_scope = mapped.get("scope", "Mapped application access")
+        else:
+            resolved_role = default_role
+            mapping_status = "Action needed"
+            mapping_scope = "Selected source role does not currently map to a saved CostOps role."
+
+    return {
+        "simulation_mode": simulation_mode,
+        "source_role": source_role,
+        "manual_role": manual_role,
+        "resolved_role": resolved_role,
+        "mapping_status": mapping_status,
+        "mapping_scope": mapping_scope,
+    }
+
+
 def has_permission(permission):
-    role = st.session_state.get("current_access_role", ACCESS_ROLES[0])
+    role = current_role_context()["resolved_role"]
     return permission in ROLE_PERMISSIONS.get(role, set())
+
+
+def permission_message(permission):
+    context = current_role_context()
+    required_roles = [
+        role_name for role_name, permissions in ROLE_PERMISSIONS.items() if permission in permissions
+    ]
+    return (
+        f"{context['resolved_role']} is active for this session. "
+        f"{'Source role ' + context['source_role'] + ' resolves to this role. ' if context['simulation_mode'] == 'Source role mapping' else ''}"
+        f"This action requires {' or '.join(required_roles)}."
+    )
 
 
 data = load_data()
 AS_OF_DATE = pd.Timestamp("2026-05-18")
 initialize_app_settings(st.session_state)
 initialize_session_store(st.session_state, data["recommendations"], data["recommendation_events"], data["scan_runs"])
+initialize_enterprise_audit_store(st.session_state)
 st.session_state.setdefault("current_access_role", "CostOps Admin")
+st.session_state.setdefault("access_simulation_mode", "Manual role")
+st.session_state.setdefault("current_source_role", "Default fallback")
 st.session_state.setdefault("data_source_mode", "Sample data")
+st.session_state.setdefault("costops_plan_name", "Enterprise")
 
 recommendations = enrich_recommendation_lifecycle(recommendations_frame(st.session_state), AS_OF_DATE)
 recommendation_events = recommendation_events_frame(st.session_state)
@@ -694,6 +761,7 @@ role_options = ["All"] + sorted(recommendations["role"].unique().tolist())
 def scan_schedule_page():
     st.title("Scan & Schedule")
     st.caption("Schedule, run, and review Snowflake environment analysis runs. POC mode uses demo history.")
+    render_enterprise_behavior_banner(current_app_settings(st.session_state), "Scan & Schedule")
     scan_control_page_section(current_app_settings(st.session_state)["credit_price"])
 
 
@@ -1062,6 +1130,21 @@ def overview():
         min_confidence=overview_filters["min_confidence"],
     )
     render_kpis(page_recs)
+
+    if current_costops_plan()[0] == "Enterprise":
+        settings = current_app_settings(st.session_state)
+        rollup = enterprise_rollup_metrics(settings)
+        blockers = enterprise_blockers(settings)
+        st.subheader("Enterprise Rollout")
+        rollout_cols = st.columns([0.9, 0.9, 0.9, 2.3], gap="small")
+        rollout_cols[0].metric("Readiness", f"{rollup['readiness_score']:.0%}")
+        rollout_cols[1].metric("Active", int(rollup["status_counts"].get("Active", 0)))
+        rollout_cols[2].metric("Action Needed", int(rollup["status_counts"].get("Action needed", 0)))
+        with rollout_cols[3]:
+            if blockers:
+                st.warning("Top blocker: " + blockers[0])
+            else:
+                st.success("Enterprise rollout has no current blocker flagged in the saved configuration.")
 
     st.subheader("Savings Opportunity")
     left, center, right = st.columns([1.2, 1, 1])
@@ -1548,6 +1631,115 @@ def report_filename(report_type, generated_at, extension="html"):
     return f"{slug}_{timestamp}.{extension}"
 
 
+def enterprise_readiness_frames(settings):
+    readiness_summary = pd.DataFrame(
+        [
+            {
+                "area": "RBAC Mapping",
+                "status": settings["enterprise_rbac_status"],
+                "current_state": settings.get("enterprise_rbac_mode", "Map existing roles"),
+                "owner_signal": settings["enterprise_default_role"],
+                "notes": f"{len(settings.get('enterprise_role_mappings', []))} role mappings configured",
+            },
+            {
+                "area": "Environments",
+                "status": settings["enterprise_linked_environments_status"],
+                "current_state": settings["enterprise_prod_account"] or "Production account pending",
+                "owner_signal": settings["enterprise_app_instance"] or "App instance pending",
+                "notes": f"{len(settings.get('enterprise_linked_environments', []))} linked validation environments",
+            },
+            {
+                "area": "Persistence",
+                "status": settings["enterprise_persistence_status"],
+                "current_state": settings["enterprise_persistence_target"],
+                "owner_signal": settings["enterprise_persistence_isolation"],
+                "notes": f"{settings['enterprise_retention']} retention | backup {settings['enterprise_backup_status']}",
+            },
+            {
+                "area": "SSO & Identity",
+                "status": settings["enterprise_sso_status"],
+                "current_state": settings["enterprise_sso_provider"],
+                "owner_signal": settings["enterprise_identity_protocol"],
+                "notes": settings["enterprise_allowed_domain"] or "Allowed domain pending",
+            },
+            {
+                "area": "SLA & Support",
+                "status": settings["enterprise_sla_status"],
+                "current_state": settings["enterprise_support_tier"],
+                "owner_signal": settings["enterprise_response_sla"],
+                "notes": settings["enterprise_deployment_owner"] or "Deployment owner pending",
+            },
+        ]
+    )
+    rbac_report = pd.DataFrame(settings.get("enterprise_role_mappings", []))
+    environments_report = pd.DataFrame(settings.get("enterprise_linked_environments", []))
+    persistence_report = pd.DataFrame(
+        [
+            {"area": "Persistence target", "value": settings["enterprise_persistence_target"]},
+            {"area": "Isolation model", "value": settings["enterprise_persistence_isolation"]},
+            {"area": "Retention", "value": settings["enterprise_retention"]},
+            {"area": "Backup status", "value": settings["enterprise_backup_status"]},
+            {"area": "Restore readiness", "value": settings["enterprise_restore_test_status"]},
+        ]
+    )
+    identity_report = pd.DataFrame(
+        [
+            {"area": "SSO provider", "value": settings["enterprise_sso_provider"]},
+            {"area": "Identity protocol", "value": settings["enterprise_identity_protocol"]},
+            {"area": "Allowed domain", "value": settings["enterprise_allowed_domain"] or "Not configured"},
+            {"area": "Metadata URL", "value": settings["enterprise_metadata_url"] or "Not configured"},
+            {"area": "Entity ID", "value": settings["enterprise_entity_id"] or "Not configured"},
+            {"area": "Implementation contact", "value": settings["enterprise_sso_contact"] or "Not configured"},
+        ]
+    )
+    support_report = pd.DataFrame(
+        [
+            {"area": "Support tier", "value": settings["enterprise_support_tier"]},
+            {"area": "Response window", "value": settings["enterprise_response_sla"]},
+            {"area": "Deployment owner", "value": settings["enterprise_deployment_owner"] or "Not configured"},
+            {"area": "Escalation path", "value": settings["enterprise_escalation_path"] or "Not configured"},
+            {"area": "Support notes", "value": "Captured" if settings["enterprise_support_notes"].strip() else "Not configured"},
+        ]
+    )
+    return readiness_summary, rbac_report, environments_report, persistence_report, identity_report, support_report
+
+
+def current_demo_actor():
+    return f"{st.session_state.get('current_access_role', 'CostOps Admin')} session"
+
+
+def diff_settings(before, after, tracked_fields):
+    changes = []
+    for field in tracked_fields:
+        before_value = before.get(field)
+        after_value = after.get(field)
+        before_text = "" if before_value is None else str(before_value)
+        after_text = "" if after_value is None else str(after_value)
+        if before_text != after_text:
+            changes.append((field, before_text or "blank", after_text or "blank"))
+    return changes
+
+
+def log_enterprise_config_change(session_state, area, before, after, tracked_fields, status_field):
+    changes = diff_settings(before, after, tracked_fields)
+    if not changes:
+        return
+    fields_changed = ", ".join(field for field, _, _ in changes)
+    detail_lines = [f"{field}: {old} -> {new}" for field, old, new in changes[:8]]
+    if len(changes) > 8:
+        detail_lines.append(f"+ {len(changes) - 8} additional field changes")
+    log_enterprise_audit_event(
+        session_state,
+        area=area,
+        change_type="CONFIG_UPDATED",
+        actor=current_demo_actor(),
+        status=after.get(status_field, "Not configured"),
+        fields_changed=fields_changed,
+        details="; ".join(detail_lines),
+        event_ts=report_timestamp(),
+    )
+
+
 def executive_report_context(
     report_type,
     period,
@@ -1572,6 +1764,12 @@ def executive_report_context(
     team_coverage_report,
     access_role_report,
     scan_report,
+    event_type_report,
+    actor_activity_report,
+    sql_evidence_report,
+    enterprise_readiness_report,
+    enterprise_config_audit_report,
+    enterprise_config_area_report,
 ):
     rows = [
         ("Time range", period),
@@ -1738,15 +1936,26 @@ def executive_report_context(
             f"It is intended for execution planning rather than executive readout."
         )
     elif report_type == "Recommendation audit trail":
+        total_events = int(event_type_report["events"].sum()) if not event_type_report.empty else 0
+        distinct_actors = int(actor_activity_report["actor"].nunique()) if not actor_activity_report.empty else 0
+        sql_evidence_count = len(sql_evidence_report)
+        implemented_events = (
+            int(event_type_report.loc[event_type_report["event_type"] == "IMPLEMENTED", "events"].sum())
+            if not event_type_report.empty
+            else 0
+        )
         rows.extend(
             [
-                ("Audit events in scope", f"{len(scan_report):,} scans tracked"),
-                ("Recommendation events included", "Use detail appendix / export tabs for full event log"),
+                ("Audit events in scope", f"{total_events:,}"),
+                ("Distinct actors", f"{distinct_actors:,}"),
+                ("SQL / implementation evidence rows", f"{sql_evidence_count:,}"),
+                ("Implemented events", f"{implemented_events:,}"),
             ]
         )
         narrative = (
             "The recommendation audit trail report is intended for workflow review, change tracking, and "
-            "implementation evidence. It focuses on recommendation events and supporting audit context."
+            f"implementation evidence. The current filtered view includes {total_events:,} audit events across "
+            f"{distinct_actors:,} actors, with {sql_evidence_count:,} SQL or implementation evidence entries."
         )
     elif report_type == "Scan ROI history":
         successful_scans = int((scan_report["status"] == "SUCCEEDED").sum()) if "status" in scan_report else len(scan_report)
@@ -1763,6 +1972,43 @@ def executive_report_context(
             f"The scan ROI report shows whether analysis runs are economically justified. Across the filtered view, "
             f"the latest scan cost is {money(scan_cost)} and found {money(scan_roi)} in monthly opportunity for every "
             f"estimated dollar of scan cost."
+        )
+    elif report_type == "Enterprise readiness":
+        active_count = int((enterprise_readiness_report["status"] == "Active").sum()) if not enterprise_readiness_report.empty else 0
+        action_needed = int((enterprise_readiness_report["status"] == "Action needed").sum()) if not enterprise_readiness_report.empty else 0
+        ready_count = int((enterprise_readiness_report["status"] == "Ready for validation").sum()) if not enterprise_readiness_report.empty else 0
+        rows.extend(
+            [
+                ("Enterprise areas tracked", f"{len(enterprise_readiness_report):,}"),
+                ("Active enterprise areas", f"{active_count:,}"),
+                ("Ready for validation", f"{ready_count:,}"),
+                ("Action needed", f"{action_needed:,}"),
+            ]
+        )
+        narrative = (
+            f"The enterprise readiness report summarizes administrative rollout posture across "
+            f"{len(enterprise_readiness_report):,} enterprise areas. {active_count:,} are active, "
+            f"{ready_count:,} are ready for validation, and {action_needed:,} currently need action."
+        )
+    elif report_type == "Enterprise config audit trail":
+        total_events = len(enterprise_config_audit_report)
+        active_areas = int(enterprise_config_area_report["area"].nunique()) if not enterprise_config_area_report.empty else 0
+        latest_actor = (
+            enterprise_config_audit_report.sort_values("event_ts", ascending=False).iloc[0]["actor"]
+            if not enterprise_config_audit_report.empty
+            else "None"
+        )
+        rows.extend(
+            [
+                ("Enterprise config events", f"{total_events:,}"),
+                ("Enterprise areas changed", f"{active_areas:,}"),
+                ("Most recent actor", str(latest_actor)),
+            ]
+        )
+        narrative = (
+            f"The enterprise config audit trail captures {total_events:,} configuration changes across "
+            f"{active_areas:,} enterprise areas. It provides an evidence trail for RBAC, environments, "
+            f"persistence, identity, and support administration."
         )
     elif report_type == "Executive ROI summary":
         realization_rate = realized_monthly / monthly_opportunity if monthly_opportunity else 0
@@ -1816,6 +2062,7 @@ def build_excel_report(
     report_type,
     executive_narrative,
     summary_rows,
+    enterprise_context_rows,
     category_report,
     team_report,
     lifecycle_report,
@@ -1830,6 +2077,17 @@ def build_excel_report(
     actioned_backlog_totals,
     remediated_backlog_totals,
     event_view,
+    event_type_report,
+    actor_activity_report,
+    sql_evidence_report,
+    enterprise_readiness_report,
+    enterprise_rbac_report,
+    enterprise_environments_report,
+    enterprise_persistence_report,
+    enterprise_identity_report,
+    enterprise_support_report,
+    enterprise_config_audit_report,
+    enterprise_config_area_report,
     selected_sections,
     report_detail,
 ):
@@ -1845,6 +2103,7 @@ def build_excel_report(
             writer, sheet_name="Executive Summary", index=False, startrow=0
         )
         summary_rows.to_excel(writer, sheet_name="Executive Summary", index=False, startrow=3)
+        enterprise_context_rows.to_excel(writer, sheet_name="Executive Summary", index=False, startrow=18)
         if report_type == "Executive ROI summary":
             roi_lines = pd.DataFrame(
                 [
@@ -1869,11 +2128,24 @@ def build_excel_report(
             access_role_report.to_excel(writer, sheet_name="Access Roles", index=False)
         if "Scan ROI history" in selected_sections:
             scan_report.to_excel(writer, sheet_name="Scan ROI", index=False)
+        if "Enterprise readiness" in selected_sections:
+            enterprise_readiness_report.to_excel(writer, sheet_name="Enterprise Ready", index=False)
+            enterprise_rbac_report.to_excel(writer, sheet_name="Enterprise RBAC", index=False)
+            enterprise_environments_report.to_excel(writer, sheet_name="Enterprise Env", index=False)
+            enterprise_persistence_report.to_excel(writer, sheet_name="Enterprise Data", index=False)
+            enterprise_identity_report.to_excel(writer, sheet_name="Enterprise SSO", index=False)
+            enterprise_support_report.to_excel(writer, sheet_name="Enterprise SLA", index=False)
+        if report_type == "Enterprise config audit trail":
+            enterprise_config_area_report.to_excel(writer, sheet_name="Config Areas", index=False)
+            enterprise_config_audit_report.head(limits["audit"]).to_excel(writer, sheet_name="Config Audit", index=False)
         if report_type == "Recommendation backlog":
             open_backlog_totals.head(limits["backlog"] + 1).to_excel(writer, sheet_name="Open Backlog", index=False)
             actioned_backlog_totals.head(limits["backlog"] + 1).to_excel(writer, sheet_name="Actioned", index=False)
             remediated_backlog_totals.head(limits["backlog"] + 1).to_excel(writer, sheet_name="Remediated", index=False)
         elif report_type == "Recommendation audit trail":
+            event_type_report.to_excel(writer, sheet_name="Audit Summary", index=False)
+            actor_activity_report.to_excel(writer, sheet_name="Actor Activity", index=False)
+            sql_evidence_report.head(limits["audit"]).to_excel(writer, sheet_name="SQL Evidence", index=False)
             event_view.sort_values("event_ts", ascending=False).head(limits["audit"]).to_excel(
                 writer, sheet_name="Audit Log", index=False
             )
@@ -1909,6 +2181,17 @@ def build_excel_report(
             "Open Backlog": open_backlog_totals,
             "Actioned": actioned_backlog_totals,
             "Remediated": remediated_backlog_totals,
+            "Audit Summary": event_type_report,
+            "Actor Activity": actor_activity_report,
+            "SQL Evidence": sql_evidence_report,
+            "Enterprise Ready": enterprise_readiness_report,
+            "Enterprise RBAC": enterprise_rbac_report,
+            "Enterprise Env": enterprise_environments_report,
+            "Enterprise Data": enterprise_persistence_report,
+            "Enterprise SSO": enterprise_identity_report,
+            "Enterprise SLA": enterprise_support_report,
+            "Config Areas": enterprise_config_area_report,
+            "Config Audit": enterprise_config_audit_report,
         }.items():
             if sheet_name not in writer.sheets:
                 continue
@@ -2024,6 +2307,7 @@ def build_pdf_report(
     generated_at,
     executive_narrative,
     summary_rows,
+    enterprise_context_rows,
     category_report,
     team_report,
     lifecycle_report,
@@ -2038,6 +2322,17 @@ def build_pdf_report(
     actioned_backlog_totals,
     remediated_backlog_totals,
     event_view,
+    event_type_report,
+    actor_activity_report,
+    sql_evidence_report,
+    enterprise_readiness_report,
+    enterprise_rbac_report,
+    enterprise_environments_report,
+    enterprise_persistence_report,
+    enterprise_identity_report,
+    enterprise_support_report,
+    enterprise_config_audit_report,
+    enterprise_config_area_report,
     selected_sections,
     report_detail,
 ):
@@ -2084,6 +2379,9 @@ def build_pdf_report(
         Spacer(1, 8),
         Paragraph("Executive ROI Summary", styles["Heading2"]),
         pdf_table(summary_rows, limit=30, max_cols=2),
+        Spacer(1, 8),
+        Paragraph("Enterprise Context", styles["Heading2"]),
+        pdf_table(enterprise_context_rows, limit=20, max_cols=2),
     ]
 
     sections = []
@@ -2203,6 +2501,17 @@ def build_pdf_report(
                 ),
             )
         )
+    if "Enterprise readiness" in selected_sections:
+        sections.append(
+            (
+                "Enterprise Readiness",
+                pdf_report_frame(
+                    enterprise_readiness_report,
+                    ["area", "status", "current_state", "owner_signal", "notes"],
+                    rename_map,
+                ),
+            )
+        )
 
     include_users_roles = "Users and roles" in selected_sections
 
@@ -2258,6 +2567,52 @@ def build_pdf_report(
                     pdf_report_frame(access_role_report, ["access_role", "users"], rename_map),
                     limit=limits["section"],
                     max_cols=2,
+                ),
+                Spacer(1, 10),
+            ]
+        )
+
+    if "Enterprise readiness" in selected_sections:
+        story.extend(
+            [
+                Paragraph("Enterprise RBAC Mapping", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        enterprise_rbac_report,
+                        ["source_role", "costops_role", "scope", "status"],
+                        rename_map,
+                    ),
+                    limit=limits["section"],
+                    max_cols=4,
+                ),
+                Spacer(1, 8),
+                Paragraph("Enterprise Environments", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        enterprise_environments_report,
+                        ["environment", "account_locator", "purpose", "status"],
+                        rename_map,
+                    ),
+                    limit=limits["section"],
+                    max_cols=4,
+                ),
+                Spacer(1, 8),
+                Paragraph("Persistence, Identity, and Support", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        pd.concat(
+                            [
+                                enterprise_persistence_report.assign(section="Persistence"),
+                                enterprise_identity_report.assign(section="Identity"),
+                                enterprise_support_report.assign(section="Support"),
+                            ],
+                            ignore_index=True,
+                        ),
+                        ["section", "area", "value"],
+                        rename_map,
+                    ),
+                    limit=limits["section"] * 2,
+                    max_cols=3,
                 ),
                 Spacer(1, 10),
             ]
@@ -2347,6 +2702,39 @@ def build_pdf_report(
     elif report_type == "Recommendation audit trail":
         story.extend(
             [
+                Paragraph("Audit Event Summary", styles["Heading2"]),
+                pdf_table(
+                    pdf_report_frame(
+                        event_type_report,
+                        ["event_type", "events", "recommendations", "actors", "latest_event_ts"],
+                        rename_map,
+                    ),
+                    limit=limits["audit"],
+                    max_cols=5,
+                ),
+                Spacer(1, 8),
+                Paragraph("Actor Activity", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        actor_activity_report,
+                        ["actor", "events", "recommendations", "sql_copied", "implemented", "latest_event_ts"],
+                        rename_map,
+                    ),
+                    limit=min(limits["audit"], 40),
+                    max_cols=6,
+                ),
+                Spacer(1, 8),
+                Paragraph("SQL / Implementation Evidence", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        sql_evidence_report,
+                        ["event_ts", "recommendation_id", "event_type", "actor", "details"],
+                        rename_map,
+                    ),
+                    limit=min(limits["audit"], 60),
+                    max_cols=5,
+                ),
+                Spacer(1, 8),
                 Paragraph("Audit Log Summary", styles["Heading2"]),
                 pdf_table(
                     pdf_report_frame(
@@ -2366,6 +2754,32 @@ def build_pdf_report(
                     ),
                     limit=min(limits["audit"], 80),
                     max_cols=3,
+                ),
+            ]
+        )
+    elif report_type == "Enterprise config audit trail":
+        story.extend(
+            [
+                Paragraph("Enterprise Config Area Summary", styles["Heading2"]),
+                pdf_table(
+                    pdf_report_frame(
+                        enterprise_config_area_report,
+                        ["area", "events", "actors", "latest_event_ts", "latest_status"],
+                        rename_map,
+                    ),
+                    limit=limits["audit"],
+                    max_cols=5,
+                ),
+                Spacer(1, 8),
+                Paragraph("Enterprise Config Audit Detail", styles["Heading3"]),
+                pdf_table(
+                    pdf_report_frame(
+                        enterprise_config_audit_report.sort_values("event_ts", ascending=False),
+                        ["event_ts", "area", "change_type", "actor", "status", "fields_changed", "details"],
+                        rename_map,
+                    ),
+                    limit=min(limits["audit"], 80),
+                    max_cols=7,
                 ),
             ]
         )
@@ -2421,6 +2835,7 @@ def build_finance_packet_html(
     generated_at,
     executive_narrative,
     summary_rows,
+    enterprise_context_rows,
     roi_bridge,
     category_report,
     team_report,
@@ -2436,6 +2851,17 @@ def build_finance_packet_html(
     actioned_backlog_totals,
     remediated_backlog_totals,
     event_view,
+    event_type_report,
+    actor_activity_report,
+    sql_evidence_report,
+    enterprise_readiness_report,
+    enterprise_rbac_report,
+    enterprise_environments_report,
+    enterprise_persistence_report,
+    enterprise_identity_report,
+    enterprise_support_report,
+    enterprise_config_audit_report,
+    enterprise_config_area_report,
     selected_sections,
     report_detail,
 ):
@@ -2589,6 +3015,9 @@ def build_finance_packet_html(
     owner_section = ""
     users_roles_section = ""
     scan_section = ""
+    audit_section = ""
+    enterprise_section = ""
+    enterprise_audit_section = ""
 
     executive_section = f"""
   <h2>Executive Summary</h2>
@@ -2655,6 +3084,40 @@ def build_finance_packet_html(
   {format_report_table(scan_report.sort_values("started_at", ascending=False), money_columns)}
 """
 
+    if "Enterprise readiness" in selected_sections:
+        enterprise_section = f"""
+  <h2>Enterprise Readiness</h2>
+  {format_report_table(enterprise_readiness_report)}
+  <h3>RBAC Mapping</h3>
+  {format_report_table(enterprise_rbac_report)}
+  <h3>Environments</h3>
+  {format_report_table(enterprise_environments_report)}
+  <h3>Persistence</h3>
+  {format_report_table(enterprise_persistence_report)}
+  <h3>SSO & Identity</h3>
+  {format_report_table(enterprise_identity_report)}
+  <h3>SLA & Support</h3>
+  {format_report_table(enterprise_support_report)}
+"""
+
+    if report_type == "Enterprise config audit trail":
+        enterprise_audit_section = f"""
+  <h2>Enterprise Config Area Summary</h2>
+  {format_report_table(enterprise_config_area_report)}
+  <h2>Enterprise Config Audit Detail</h2>
+  {format_report_table(enterprise_config_audit_report.sort_values("event_ts", ascending=False), limit=limits["audit"])}
+"""
+
+    if report_type == "Recommendation audit trail":
+        audit_section = f"""
+  <h2>Audit Event Summary</h2>
+  {format_report_table(event_type_report.sort_values("events", ascending=False))}
+  <h2>Actor Activity</h2>
+  {format_report_table(actor_activity_report.sort_values("events", ascending=False))}
+  <h2>SQL / Implementation Evidence</h2>
+  {format_report_table(sql_evidence_report.sort_values("event_ts", ascending=False), limit=limits["audit"])}
+"""
+
     return f"""<!doctype html>
 <html>
 <head>
@@ -2681,6 +3144,8 @@ def build_finance_packet_html(
   <div class="meta">Generated {escape(generated_ts)} from the current filtered report view.</div>
   <h2>Report Context</h2>
   {format_report_table(filter_rows)}
+  <h2>Enterprise Context</h2>
+  {format_report_table(enterprise_context_rows)}
   {executive_section}
   {category_section}
   {team_section}
@@ -2689,6 +3154,9 @@ def build_finance_packet_html(
   {owner_section}
   {users_roles_section}
   {scan_section}
+  {audit_section}
+  {enterprise_section}
+  {enterprise_audit_section}
   <h2>{'Open Recommendation Backlog' if report_type == 'Recommendation backlog' else 'Recommendation Backlog Snapshot'}</h2>
   {format_report_table((open_backlog_totals if report_type == 'Recommendation backlog' else backlog_export), money_columns, limit=((limits["backlog"] + 1) if report_type == 'Recommendation backlog' else min(limits["backlog"], 25)))}
   {'<h2>Actioned Recommendations</h2>' + format_report_table(actioned_backlog_totals, money_columns, limit=limits["backlog"] + 1) if report_type == 'Recommendation backlog' else ''}
@@ -2703,6 +3171,7 @@ def build_finance_packet_html(
 def reports_page():
     settings = current_app_settings(st.session_state)
     st.title("Reports")
+    render_enterprise_behavior_banner(settings, "Reports")
     top_cols = st.columns([1.35, 0.95, 1, 1, 1, 1])
     with top_cols[0]:
         report_type = st.selectbox(
@@ -2717,6 +3186,8 @@ def reports_page():
                 "Owner accountability",
                 "Users and roles",
                 "Scan ROI history",
+                "Enterprise readiness",
+                "Enterprise config audit trail",
                 "Recommendation backlog",
                 "Recommendation audit trail",
                 "Custom report",
@@ -2979,6 +3450,66 @@ def reports_page():
         event_view = event_view[event_view["owner"] == owner]
     if team != "All":
         event_view = event_view[event_view["team"] == team]
+    event_type_report = (
+        event_view.groupby("event_type", as_index=False)
+        .agg(
+            events=("event_id", "count"),
+            recommendations=("recommendation_id", "nunique"),
+            actors=("actor", "nunique"),
+            latest_event_ts=("event_ts", "max"),
+        )
+        .sort_values("events", ascending=False)
+    )
+    actor_activity_report = (
+        event_view.groupby("actor", as_index=False)
+        .agg(
+            events=("event_id", "count"),
+            recommendations=("recommendation_id", "nunique"),
+            sql_copied=("event_type", lambda values: int((values == "SQL_COPIED").sum())),
+            implemented=("event_type", lambda values: int(values.isin(["IMPLEMENTED", "REALIZED"]).sum())),
+            latest_event_ts=("event_ts", "max"),
+        )
+        .sort_values(["events", "implemented"], ascending=False)
+    )
+    sql_evidence_report = event_view[
+        event_view["event_type"].isin(["SQL_COPIED", "IMPLEMENTED", "REALIZED", "SAVINGS_CALCULATED"])
+    ][["event_ts", "recommendation_id", "event_type", "actor", "details", "owner", "team", "title"]].copy()
+    (
+        enterprise_readiness_report,
+        enterprise_rbac_report,
+        enterprise_environments_report,
+        enterprise_persistence_report,
+        enterprise_identity_report,
+        enterprise_support_report,
+    ) = enterprise_readiness_frames(settings)
+    env_context = enterprise_environment_context(settings)
+    enterprise_context_rows = pd.DataFrame(
+        [
+            ("Production account", env_context["production_account"]),
+            ("Production region", env_context["production_region"]),
+            ("App instance", env_context["app_instance"]),
+            ("Billing scope", env_context["billing_scope"]),
+            ("Linked validation environments", env_context["linked_names"]),
+            ("Configured validation accounts", f"{env_context['configured_linked_count']}/{env_context['linked_count']}"),
+        ],
+        columns=["Metric", "Value"],
+    )
+    enterprise_config_audit_report = enterprise_audit_frame(st.session_state)
+    if not enterprise_config_audit_report.empty:
+        enterprise_config_area_report = (
+            enterprise_config_audit_report.groupby("area", as_index=False)
+            .agg(
+                events=("event_id", "count"),
+                actors=("actor", "nunique"),
+                latest_event_ts=("event_ts", "max"),
+                latest_status=("status", "last"),
+            )
+            .sort_values("events", ascending=False)
+        )
+    else:
+        enterprise_config_area_report = pd.DataFrame(
+            columns=["area", "events", "actors", "latest_event_ts", "latest_status"]
+        )
     executive_narrative, summary_rows = executive_report_context(
         report_type,
         period,
@@ -3003,6 +3534,12 @@ def reports_page():
         team_coverage_report,
         access_role_report,
         scan_report,
+        event_type_report,
+        actor_activity_report,
+        sql_evidence_report,
+        enterprise_readiness_report,
+        enterprise_config_audit_report,
+        enterprise_config_area_report,
     )
     action_cols = st.columns([1.15, 1.12, 1.05, 2.9], gap="small", vertical_alignment="top")
     with action_cols[0]:
@@ -3024,6 +3561,7 @@ def reports_page():
             generated_at,
             executive_narrative,
             summary_rows,
+            enterprise_context_rows,
             category_report,
             team_report,
             lifecycle_report,
@@ -3036,10 +3574,21 @@ def reports_page():
         backlog_export,
         open_backlog_totals,
         actioned_backlog_totals,
-        remediated_backlog_totals,
-        event_view,
-        selected_sections,
-        report_detail,
+            remediated_backlog_totals,
+            event_view,
+            event_type_report,
+            actor_activity_report,
+            sql_evidence_report,
+            enterprise_readiness_report,
+            enterprise_rbac_report,
+            enterprise_environments_report,
+            enterprise_persistence_report,
+            enterprise_identity_report,
+            enterprise_support_report,
+            enterprise_config_audit_report,
+            enterprise_config_area_report,
+            selected_sections,
+            report_detail,
         )
         download_extension = "pdf"
         download_mime = "application/pdf"
@@ -3048,6 +3597,7 @@ def reports_page():
             report_type,
             executive_narrative,
             summary_rows,
+            enterprise_context_rows,
             category_report,
             team_report,
             lifecycle_report,
@@ -3060,10 +3610,21 @@ def reports_page():
         backlog_export,
         open_backlog_totals,
         actioned_backlog_totals,
-        remediated_backlog_totals,
-        event_view,
-        selected_sections,
-        report_detail,
+            remediated_backlog_totals,
+            event_view,
+            event_type_report,
+            actor_activity_report,
+            sql_evidence_report,
+            enterprise_readiness_report,
+            enterprise_rbac_report,
+            enterprise_environments_report,
+            enterprise_persistence_report,
+            enterprise_identity_report,
+            enterprise_support_report,
+            enterprise_config_audit_report,
+            enterprise_config_area_report,
+            selected_sections,
+            report_detail,
         )
         download_extension = "xlsx"
         download_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -3081,6 +3642,7 @@ def reports_page():
             generated_at,
             executive_narrative,
             summary_rows,
+            enterprise_context_rows,
             roi_bridge,
             category_report,
             team_report,
@@ -3094,10 +3656,21 @@ def reports_page():
         backlog_export,
         open_backlog_totals,
         actioned_backlog_totals,
-        remediated_backlog_totals,
-        event_view,
-        selected_sections,
-        report_detail,
+            remediated_backlog_totals,
+            event_view,
+            event_type_report,
+            actor_activity_report,
+            sql_evidence_report,
+            enterprise_readiness_report,
+            enterprise_rbac_report,
+            enterprise_environments_report,
+            enterprise_persistence_report,
+            enterprise_identity_report,
+            enterprise_support_report,
+            enterprise_config_audit_report,
+            enterprise_config_area_report,
+            selected_sections,
+            report_detail,
         )
         download_extension = "html"
         download_mime = "text/html"
@@ -3135,6 +3708,8 @@ def reports_page():
 
     st.subheader("Executive Summary")
     st.write(executive_narrative)
+    st.subheader("Enterprise Context")
+    st.dataframe(enterprise_context_rows, use_container_width=True, hide_index=True)
     st.subheader("Executive ROI Summary")
     roi_cols = st.columns([1, 1])
     with roi_cols[0]:
@@ -3472,6 +4047,7 @@ def reports_page():
 
 def scan_control_page_section(credit_price):
     settings = current_app_settings(st.session_state)
+    env_context = enterprise_environment_context(settings)
     latest_scan = latest_successful_scan(scan_runs)
     freshness = scan_freshness(scan_runs, AS_OF_DATE + pd.Timedelta(hours=12), stale_after_hours=24)
 
@@ -3489,6 +4065,16 @@ def scan_control_page_section(credit_price):
         cols[5].metric("Savings Found per $1 Scan Cost", money(roi), "monthly opportunity")
     else:
         st.warning("No successful scan exists yet.")
+
+    if current_costops_plan()[0] == "Enterprise":
+        env_cols = st.columns([1, 1, 1], gap="small")
+        env_cols[0].metric("Production account", env_context["production_account"])
+        env_cols[1].metric("App instance", env_context["app_instance"])
+        env_cols[2].metric("Linked validation envs", env_context["linked_count"])
+        st.caption(
+            f"Enterprise scan scope: billable production account {env_context['production_account']} in "
+            f"{env_context['production_region']}; linked validation environments: {env_context['linked_names']}."
+        )
 
     left, center, right = st.columns([1.1, 1.1, 1])
     with left:
@@ -3511,7 +4097,7 @@ def scan_control_page_section(credit_price):
         "read account usage metadata, then writes results to the local workflow store and optional Snowflake tables."
     )
     if not has_permission("operate"):
-        st.info("Viewer access is active. Analysis runs require the CostOps Admin or CostOps Operator role.")
+        st.info(permission_message("operate"))
 
     if run_now:
         actor = "Ad hoc user"
@@ -3568,6 +4154,14 @@ def scan_control_page_section(credit_price):
         )
         scan_result["scan_run"]["frequency"] = schedule
         scan_result["scan_run"]["schedule_name"] = f"{schedule} at {preferred_time.strftime('%H:%M')}"
+        scan_result["scan_run"]["production_account"] = env_context["production_account"]
+        scan_result["scan_run"]["production_region"] = env_context["production_region"]
+        scan_result["scan_run"]["app_instance"] = env_context["app_instance"]
+        scan_result["scan_run"]["billing_scope"] = env_context["billing_scope"]
+        scan_result["scan_run"]["linked_validation_envs"] = env_context["linked_names"]
+        scan_result["scan_run"]["environment_scope"] = (
+            f"Production: {env_context['production_account']} | Validation: {env_context['linked_names']}"
+        )
         merge_scan_results(st.session_state, scan_result, actor, run_ts)
 
         if data_source_mode == "Snowflake" and snowflake_config:
@@ -3621,19 +4215,52 @@ def settings_page():
     st.title("Settings")
     st.caption("POC controls for scan configuration, thresholds, and Snowflake Marketplace packaging assumptions.")
     if not has_permission("admin"):
-        st.warning("Settings are read-only for this session role. CostOps Admin is required for connection and install actions.")
+        st.warning(permission_message("admin"))
 
     st.subheader("Session Controls")
-    session_cols = st.columns(2)
+    role_context = current_role_context(settings)
+    mapped_source_options = ["Default fallback"]
+    mapped_source_options.extend(
+        pd.DataFrame(settings.get("enterprise_role_mappings", []))
+        .get("source_role", pd.Series(dtype=str))
+        .dropna()
+        .astype(str)
+        .tolist()
+    )
+    mapped_source_options = list(dict.fromkeys(mapped_source_options))
+    session_cols = st.columns(4)
     with session_cols[0]:
         st.selectbox(
-            "Access role",
-            ACCESS_ROLES,
-            index=ACCESS_ROLES.index(st.session_state.get("current_access_role", "CostOps Admin")),
-            key="current_access_role",
-            help="Local demo selector for testing Admin, Operator, and Viewer permissions.",
+            "Session role mode",
+            ["Manual role", "Source role mapping"],
+            index=["Manual role", "Source role mapping"].index(
+                st.session_state.get("access_simulation_mode", "Manual role")
+            ),
+            key="access_simulation_mode",
+            help="Manual role uses the direct CostOps role selector. Source role mapping resolves through the saved RBAC mapping.",
         )
     with session_cols[1]:
+        if st.session_state.get("access_simulation_mode", "Manual role") == "Manual role":
+            st.selectbox(
+                "Access role",
+                ACCESS_ROLES,
+                index=ACCESS_ROLES.index(st.session_state.get("current_access_role", "CostOps Admin")),
+                key="current_access_role",
+                help="Local demo selector for testing Admin, Operator, and Viewer permissions.",
+            )
+        else:
+            st.selectbox(
+                "Source role",
+                mapped_source_options,
+                index=mapped_source_options.index(st.session_state.get("current_source_role", "Default fallback"))
+                if st.session_state.get("current_source_role", "Default fallback") in mapped_source_options
+                else 0,
+                key="current_source_role",
+                help="Simulate a Snowflake or identity role resolving through the saved RBAC mappings.",
+            )
+    with session_cols[2]:
+        st.text_input("Resolved CostOps role", value=role_context["resolved_role"], disabled=True)
+    with session_cols[3]:
         st.selectbox(
             "Data source",
             ["Sample data", "Snowflake"],
@@ -3641,6 +4268,12 @@ def settings_page():
             key="data_source_mode",
             help="Use sample data for demos, or Snowflake when secrets are configured.",
         )
+    st.caption(
+        f"Session context: {role_context['simulation_mode']} | "
+        f"Resolved role: {role_context['resolved_role']} | "
+        f"Status: {role_context['mapping_status']} | "
+        f"Scope: {role_context['mapping_scope']}"
+    )
 
     left, center, right = st.columns(3)
     with left:
@@ -3821,7 +4454,7 @@ def users_roles_page():
     st.title("Users and Roles")
     st.caption("Manage the teams, user directory, business roles, and application access model that drive ownership and workflow routing.")
     if not has_permission("admin"):
-        st.warning("Users and Roles is read-only for this session role. CostOps Admin is required to change assignments.")
+        st.warning(permission_message("admin"))
 
     raw_directory = [dict(entry) for entry in user_directory_frame(settings)]
     directory = pd.DataFrame(raw_directory)
@@ -3835,7 +4468,7 @@ def users_roles_page():
     if st.session_state.get("users_roles_team_mode_version") != 2:
         st.session_state["users_roles_team_mode"] = "Edit team"
         st.session_state["users_roles_team_mode_version"] = 2
-    team_action_cols = st.columns([1.35, 0.72, 3.6], gap="small", vertical_alignment="top")
+    team_action_cols = st.columns([1.35, 0.72, 3.6], gap="small", vertical_alignment="bottom")
     with team_action_cols[0]:
         team_mode = st.segmented_control(
             "Team action",
@@ -3846,6 +4479,7 @@ def users_roles_page():
             width="stretch",
         )
     with team_action_cols[1]:
+        st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
         save_team = st.button("Save", key="save_team", type="primary", use_container_width=True)
 
     existing_team = ""
@@ -3932,7 +4566,7 @@ def users_roles_page():
 
     st.subheader("Manage Users")
     user_modes = ["Add new", "Edit existing", "Remove"]
-    user_action_cols = st.columns([1.35, 0.72, 3.6], gap="small", vertical_alignment="top")
+    user_action_cols = st.columns([1.35, 0.72, 3.6], gap="small", vertical_alignment="bottom")
     with user_action_cols[0]:
         mode = st.segmented_control(
             "Action",
@@ -3945,6 +4579,7 @@ def users_roles_page():
     with user_action_cols[1]:
         button_label = "Save" if mode != "Remove" else "Remove"
         button_kind = "primary" if mode != "Remove" else "secondary"
+        st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
         save_user = st.button(button_label, type=button_kind, use_container_width=True)
 
     selected_owner = None
@@ -4075,9 +4710,9 @@ def users_roles_page():
 
 
 def current_costops_plan():
-    plan_name = st.session_state.get("costops_plan_name", "Free")
+    plan_name = st.session_state.get("costops_plan_name", "Enterprise")
     if plan_name not in COSTOPS_PLAN_ENTITLEMENTS:
-        plan_name = "Free"
+        plan_name = "Enterprise"
     return plan_name, COSTOPS_PLAN_ENTITLEMENTS[plan_name]
 
 
@@ -4123,6 +4758,7 @@ def usage_limit_warnings(plan, warehouse_count, recommendation_count):
 
 def render_sidebar_plan_status(recommendation_count, warehouse_count):
     plan_name, plan = current_costops_plan()
+    role_context = current_role_context()
     category_text = ", ".join(plan["categories"])
     st.markdown(
         f"""
@@ -4147,6 +4783,14 @@ def render_sidebar_plan_status(recommendation_count, warehouse_count):
             <div class="costops-sidebar-status-row">
                 <span class="costops-sidebar-status-label">Scan cadence</span>
                 <span class="costops-sidebar-status-value">{escape(plan["scheduled_scans"])}</span>
+            </div>
+            <div class="costops-sidebar-status-row">
+                <span class="costops-sidebar-status-label">Resolved role</span>
+                <span class="costops-sidebar-status-value">{escape(role_context["resolved_role"])}</span>
+            </div>
+            <div class="costops-sidebar-status-row">
+                <span class="costops-sidebar-status-label">Session mode</span>
+                <span class="costops-sidebar-status-value">{escape(role_context["simulation_mode"])}</span>
             </div>
         </div>
         """,
@@ -4278,7 +4922,219 @@ def _render_costops_marketplace_workflow():
     )
 
 
+def _enterprise_badge(status):
+    tone_map = {
+        "Not configured": ("#e5e7eb", "#475569"),
+        "Ready for validation": ("#dbeafe", "#1d4ed8"),
+        "Active": ("#dcfce7", "#166534"),
+        "Action needed": ("#fef3c7", "#92400e"),
+    }
+    background, text = tone_map.get(status, ("#e5e7eb", "#334155"))
+    return (
+        f'<span style="display:inline-block;border-radius:999px;padding:0.14rem 0.48rem;'
+        f'background:{background};color:{text};font-size:0.72rem;font-weight:800;">{escape(status)}</span>'
+    )
+
+
+def _enterprise_overview_cards(items):
+    cards = []
+    for title, status, copy in items:
+        cards.append(
+            "<div class='costops-entitlement-card'>"
+            f"<div class='costops-entitlement-title'>{escape(title)}</div>"
+            f"<div class='costops-entitlement-copy'>{escape(copy)}</div>"
+            f"{_enterprise_badge(status)}"
+            "</div>"
+        )
+    st.markdown("<div class='costops-entitlement-grid'>" + "".join(cards) + "</div>", unsafe_allow_html=True)
+
+
+def _enterprise_locked_message(plan_name, feature_label):
+    st.warning(
+        f"{feature_label} is locked on the {plan_name} plan. Upgrade to Enterprise to configure this surface."
+    )
+    st.link_button("Review Enterprise Plan", "/upgrade_plan", type="primary")
+
+
+def enterprise_control_rows(settings):
+    return [
+        {
+            "area": "Production Instance",
+            "status": settings["enterprise_production_status"],
+            "current_state": settings["enterprise_prod_account"] or "Production account pending",
+            "next_step": "Define the production Snowflake account and installed app instance.",
+        },
+        {
+            "area": "RBAC Mapping",
+            "status": settings["enterprise_rbac_status"],
+            "current_state": settings.get("enterprise_rbac_mode", "Map existing roles"),
+            "next_step": "Confirm source-role mapping coverage for Admin, Operator, and Viewer.",
+        },
+        {
+            "area": "Linked Dev/Test",
+            "status": settings["enterprise_linked_environments_status"],
+            "current_state": f"{len(settings.get('enterprise_linked_environments', []))} validation environments",
+            "next_step": "Link dev/test validation accounts and confirm their purpose.",
+        },
+        {
+            "area": "Dedicated Persistence",
+            "status": settings["enterprise_persistence_status"],
+            "current_state": settings["enterprise_persistence_target"],
+            "next_step": "Validate isolation, retention, backup cadence, and restore readiness.",
+        },
+        {
+            "area": "SSO & Identity",
+            "status": settings["enterprise_sso_status"],
+            "current_state": settings["enterprise_sso_provider"],
+            "next_step": "Capture provider metadata, domain rules, and implementation contact.",
+        },
+        {
+            "area": "SLA & Support",
+            "status": settings["enterprise_sla_status"],
+            "current_state": settings["enterprise_support_tier"],
+            "next_step": "Assign deployment owner and escalation path.",
+        },
+    ]
+
+
+def enterprise_environment_context(settings):
+    linked = settings.get("enterprise_linked_environments", []) or []
+    configured_linked = [entry for entry in linked if str(entry.get("account_locator", "")).strip()]
+    return {
+        "production_account": settings.get("enterprise_prod_account", "") or "Not configured",
+        "production_region": settings.get("enterprise_prod_region", "") or "Not configured",
+        "app_instance": settings.get("enterprise_app_instance", "") or "Not configured",
+        "billing_scope": settings.get("enterprise_billing_scope", "") or "Not configured",
+        "linked_count": len(linked),
+        "configured_linked_count": len(configured_linked),
+        "linked_names": ", ".join(entry.get("environment", "") for entry in linked if entry.get("environment")) or "None",
+    }
+
+
+def enterprise_rollup_metrics(settings):
+    rows = enterprise_control_rows(settings)
+    status_counts = pd.Series([row["status"] for row in rows]).value_counts()
+    weights = {
+        "Not configured": 0.0,
+        "Action needed": 0.25,
+        "Ready for validation": 0.7,
+        "Active": 1.0,
+    }
+    score = 0.0
+    if rows:
+        score = sum(weights.get(row["status"], 0.0) for row in rows) / len(rows)
+    return {
+        "rows": rows,
+        "status_counts": status_counts.to_dict(),
+        "readiness_score": score,
+    }
+
+
+def enterprise_blockers(settings):
+    blockers = []
+    if not settings["enterprise_prod_account"]:
+        blockers.append("Production Snowflake account is not defined yet.")
+    if settings["enterprise_rbac_status"] == "Not configured":
+        blockers.append("RBAC mappings have not been established.")
+    if settings["enterprise_sso_status"] == "Action needed":
+        blockers.append("SSO & Identity needs follow-up before rollout.")
+    if settings["enterprise_persistence_status"] in {"Not configured", "Action needed"}:
+        blockers.append("Dedicated persistence is not ready for rollout validation.")
+    if not settings["enterprise_deployment_owner"]:
+        blockers.append("SLA & Support does not have a deployment owner assigned.")
+    return blockers
+
+
+def render_enterprise_behavior_banner(settings, location_label):
+    plan_name, _ = current_costops_plan()
+    if plan_name != "Enterprise":
+        return
+
+    blockers = enterprise_blockers(settings)
+    prod_account = settings["enterprise_prod_account"] or "Not configured"
+    if location_label == "Scan & Schedule":
+        if blockers:
+            st.warning(
+                f"Enterprise scan context is not fully ready. Production account: {prod_account}. "
+                f"Top blocker: {blockers[0]}"
+            )
+        else:
+            st.success(
+                f"Enterprise scan context is anchored to production account {prod_account} with "
+                f"{len(settings.get('enterprise_linked_environments', []))} linked validation environments."
+            )
+    elif location_label == "Reports":
+        if blockers:
+            st.info(
+                f"Enterprise rollout is still in progress for reporting context. Production account: {prod_account}. "
+                f"{len(blockers)} blocker(s) remain."
+            )
+        else:
+            st.success(
+                f"Enterprise reporting context is ready for production account {prod_account}. "
+                "Readiness and config audit reports are available for export."
+            )
+
+
+def _rbac_permission_catalog():
+    return [
+        ("admin", "Admin controls", "Manage enterprise configuration, persistence, and settings."),
+        ("operate", "Workflow actions", "Run scans, update recommendation stages, and manage execution workflow."),
+        ("assign", "Assignment updates", "Assign ownership, due dates, and operating responsibility."),
+        ("view_sensitive", "Sensitive views", "See financial detail, audit history, and sensitive reporting surfaces."),
+    ]
+
+
+def _rbac_permission_summary(role_name):
+    permissions = ROLE_PERMISSIONS.get(role_name, set())
+    rows = []
+    for permission_key, label, description in _rbac_permission_catalog():
+        rows.append(
+            {
+                "Capability": label,
+                "Allowed": "Yes" if permission_key in permissions else "No",
+                "Description": description,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _rbac_starter_roles():
+    return [
+        {
+            "source_role": "COSTOPS_ADMIN",
+            "costops_role": "CostOps Admin",
+            "scope": "Enterprise administration and privileged configuration",
+        },
+        {
+            "source_role": "COSTOPS_OPERATOR",
+            "costops_role": "CostOps Operator",
+            "scope": "Recommendation workflow, scans, and day-to-day operations",
+        },
+        {
+            "source_role": "COSTOPS_VIEWER",
+            "costops_role": "CostOps Viewer",
+            "scope": "Read-only dashboards, reports, and audit visibility",
+        },
+    ]
+
+
+def _rbac_suggested_source_roles(existing_roles=None):
+    existing_roles = existing_roles or []
+    seeded = [
+        "SNOWFLAKE_COSTOPS_ADMIN",
+        "SNOWFLAKE_COSTOPS_OPERATOR",
+        "SNOWFLAKE_COSTOPS_VIEWER",
+        "COSTOPS_ADMIN",
+        "COSTOPS_OPERATOR",
+        "COSTOPS_VIEWER",
+        *existing_roles,
+    ]
+    return list(dict.fromkeys([role for role in seeded if role]))
+
+
 def enterprise_controls_page():
+    settings = current_app_settings(st.session_state)
     plan_name, plan = current_costops_plan()
     enterprise_unlocked = has_entitlement("enterprise_controls")
 
@@ -4289,12 +5145,7 @@ def enterprise_controls_page():
     )
 
     if not enterprise_unlocked:
-        st.warning(
-            f"Enterprise Controls are locked on the {plan_name} plan. "
-            "Upgrade to Enterprise to activate SSO, RBAC mapping, dedicated persistence, SLA tracking, "
-            "and linked dev/test validation."
-        )
-        st.link_button("Review Enterprise Plan", "/upgrade_plan", type="primary")
+        _enterprise_locked_message(plan_name, "Enterprise Controls")
         st.subheader("Enterprise Feature Status")
         _render_enterprise_feature_grid(locked=True)
         return
@@ -4308,39 +5159,1138 @@ def enterprise_controls_page():
         "and marketplace entitlement sync still need production integrations."
     )
 
+    rollup = enterprise_rollup_metrics(settings)
+    blockers = enterprise_blockers(settings)
+    recent_audit = enterprise_audit_frame(st.session_state).sort_values("event_ts", ascending=False)
+    rollup_cols = st.columns(4, gap="small")
+    rollup_cols[0].metric("Enterprise readiness", f"{rollup['readiness_score']:.0%}")
+    rollup_cols[1].metric("Active areas", int(rollup["status_counts"].get("Active", 0)))
+    rollup_cols[2].metric("Ready for validation", int(rollup["status_counts"].get("Ready for validation", 0)))
+    rollup_cols[3].metric("Action needed", int(rollup["status_counts"].get("Action needed", 0)))
+
+    if blockers:
+        st.warning("Current rollout blockers: " + " | ".join(blockers[:3]))
+    else:
+        st.success("No current enterprise rollout blockers are flagged in the saved configuration state.")
+
     st.subheader("Enterprise Feature Status")
     _render_enterprise_feature_grid(locked=False)
+    _enterprise_overview_cards(
+        [
+            (
+                "Production Instance",
+                settings["enterprise_production_status"],
+                settings["enterprise_prod_account"] or "Define the production Snowflake account and installed app instance.",
+            ),
+            (
+                "RBAC Mapping",
+                settings["enterprise_rbac_status"],
+                f"Default role: {settings['enterprise_default_role']}. Maintain Admin, Operator, and Viewer mappings.",
+            ),
+            (
+                "Linked Dev/Test",
+                settings["enterprise_linked_environments_status"],
+                "Track validation environments before production rollout.",
+            ),
+            (
+                "Dedicated Persistence",
+                settings["enterprise_persistence_status"],
+                f"{settings['enterprise_persistence_target']} | {settings['enterprise_retention']} retention",
+            ),
+            (
+                "SSO & Identity",
+                settings["enterprise_sso_status"],
+                f"{settings['enterprise_sso_provider']} | {settings['enterprise_identity_protocol']}",
+            ),
+            (
+                "SLA & Support",
+                settings["enterprise_sla_status"],
+                f"{settings['enterprise_support_tier']} | {settings['enterprise_response_sla']}",
+            ),
+        ]
+    )
 
-    st.subheader("Production Instance")
-    instance_cols = st.columns(3)
-    with instance_cols[0]:
-        st.text_input("Production Snowflake account", placeholder="ORG-ACCOUNT", key="enterprise_prod_account")
-    with instance_cols[1]:
-        st.text_input("Region", placeholder="AWS us-east-1", key="enterprise_prod_region")
-    with instance_cols[2]:
-        st.text_input("Installed app instance", placeholder="GRAINAI_COSTOPS_PROD", key="enterprise_app_instance")
+    st.subheader("Readiness Rollup")
+    st.dataframe(
+        pd.DataFrame(rollup["rows"]).rename(
+            columns={
+                "area": "Area",
+                "status": "Status",
+                "current_state": "Current State",
+                "next_step": "Next Step",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
 
-    st.subheader("SSO & RBAC")
-    identity_cols = st.columns(2)
-    with identity_cols[0]:
-        st.selectbox("SSO provider", ["Not configured", "Okta", "Microsoft Entra ID", "Ping Identity", "Other"], key="enterprise_sso_provider")
-        st.text_input("Allowed email domain", placeholder="company.com", key="enterprise_allowed_domain")
-    with identity_cols[1]:
-        st.selectbox("Default CostOps role", ACCESS_ROLES, key="enterprise_default_role")
-        st.text_area(
-            "Role mapping notes",
-            placeholder="Example: SNOWFLAKE_FINOPS_ADMIN -> CostOps Admin",
-            key="enterprise_role_mapping_notes",
+    if not recent_audit.empty:
+        st.subheader("Recent Enterprise Config Changes")
+        st.dataframe(
+            recent_audit[
+                ["event_ts", "area", "actor", "status", "fields_changed", "details"]
+            ].head(8),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.subheader("Recent Enterprise Config Changes")
+        st.caption("No enterprise config changes have been logged yet. Save an enterprise admin page to start the audit trail.")
+
+    st.subheader("Implementation Scope")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                ("Enterprise Controls", "Overview dashboard", "Live"),
+                ("RBAC Mapping", "Role-to-role mapping with status tracking", "Ready"),
+                ("Environments", "Production instance plus linked dev/test", "Ready"),
+                ("Persistence", "Dedicated persistence operating model", "Ready"),
+                ("SSO & Identity", "Metadata capture and readiness tracking", "Ready"),
+                ("SLA & Support", "Support tier and escalation ownership", "Ready"),
+            ],
+            columns=["Area", "Purpose", "Current State"],
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def rbac_mapping_page():
+    settings = current_app_settings(st.session_state)
+    plan_name, _ = current_costops_plan()
+    unlocked = has_entitlement("rbac")
+    editable = unlocked and has_permission("admin")
+
+    st.title("RBAC Mapping")
+    st.caption("Map Snowflake or application roles to CostOps Admin, Operator, and Viewer responsibilities.")
+    if not unlocked:
+        _enterprise_locked_message(plan_name, "RBAC Mapping")
+    elif not has_permission("admin"):
+        st.info("RBAC Mapping is visible in read-only mode for this session role.")
+
+    mappings = pd.DataFrame(settings.get("enterprise_role_mappings", []))
+    if mappings.empty:
+        mappings = pd.DataFrame(columns=["source_role", "costops_role", "scope", "status"])
+
+    mapped_roles = {value for value in mappings.get("costops_role", pd.Series(dtype=str)).tolist() if value}
+    active_mappings = int((mappings["status"] == "Active").sum()) if "status" in mappings else 0
+    ready_mappings = int((mappings["status"] == "Ready for validation").sum()) if "status" in mappings else 0
+    summary_cols = st.columns(4, gap="small")
+    summary_cols[0].metric("Mapped source roles", f"{len(mappings)}")
+    summary_cols[1].metric("CostOps role coverage", f"{len(mapped_roles)}/{len(ACCESS_ROLES)}")
+    summary_cols[2].metric("Active mappings", f"{active_mappings}")
+    summary_cols[3].metric("Ready for validation", f"{ready_mappings}")
+
+    mapping_cols = st.columns([1, 1, 1.1], gap="small")
+    rbac_status = mapping_cols[0].selectbox(
+        "Status",
+        ENTERPRISE_STATUS_OPTIONS,
+        index=ENTERPRISE_STATUS_OPTIONS.index(settings["enterprise_rbac_status"]),
+        disabled=not editable,
+    )
+    default_role = mapping_cols[1].selectbox(
+        "Default CostOps role",
+        ACCESS_ROLES,
+        index=ACCESS_ROLES.index(settings["enterprise_default_role"]),
+        disabled=not editable,
+    )
+    mapping_cols[2].text_input("Current plan", value=current_costops_plan()[0], disabled=True)
+    mapping_notes = st.text_area(
+        "Mapping notes",
+        value=settings["enterprise_role_mapping_notes"],
+        placeholder="Example: SNOWFLAKE_FINOPS_ADMIN -> CostOps Admin",
+        disabled=not editable,
+    )
+
+    role_strategy = st.segmented_control(
+        "Role onboarding path",
+        ["Map existing roles", "Use recommended roles"],
+        default=settings.get("enterprise_rbac_mode", "Map existing roles"),
+        width="stretch",
+        disabled=not editable,
+    )
+    if role_strategy == "Use recommended roles":
+        st.info(
+            "Recommended roles work well for smaller or less mature teams. CostOps suggests account-role names and "
+            "the SQL needed to grant the app’s roles into those Snowflake roles."
+        )
+    else:
+        st.info(
+            "Map existing Snowflake or identity roles when the customer already has an established access model."
         )
 
-    st.subheader("Dedicated Persistence")
-    persistence_cols = st.columns(3)
-    with persistence_cols[0]:
-        st.selectbox("Persistence status", ["Planned", "Provisioned", "Healthy", "Action needed"], key="enterprise_persistence_status")
-    with persistence_cols[1]:
-        st.selectbox("Retention", ["12 months", "24 months", "36 months", "Custom"], key="enterprise_retention")
-    with persistence_cols[2]:
-        st.selectbox("Backup status", ["Not configured", "Daily", "Hourly", "Custom"], key="enterprise_backup_status")
+    action_cols = st.columns([2.2, 0.95, 2], gap="small", vertical_alignment="bottom")
+    with action_cols[0]:
+        mode = st.segmented_control(
+            "Mapping action",
+            ["Edit mapping", "Remove mapping", "Add mapping"],
+            default="Edit mapping",
+            width="stretch",
+        )
+    with action_cols[1]:
+        st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
+        save_mapping = st.button("Save", type="primary", disabled=not editable, width="stretch")
+    with action_cols[2]:
+        if mode == "Add mapping":
+            st.caption("Create a new Snowflake or application role mapping into CostOps.")
+        elif mode == "Edit mapping":
+            st.caption("Update an existing source-role mapping and validation status.")
+        else:
+            st.caption("Remove a mapping. The default CostOps role will still apply as a fallback.")
+
+    selected_source = ""
+    selected_record = {}
+    if mode in {"Edit mapping", "Remove mapping"} and not mappings.empty:
+        selected_source = st.selectbox("Source role", [""] + mappings["source_role"].tolist())
+        if selected_source:
+            selected_record = mappings[mappings["source_role"] == selected_source].iloc[0].to_dict()
+
+    suggested_roles = _rbac_suggested_source_roles(mappings["source_role"].tolist() if "source_role" in mappings else [])
+    recommended_roles = _rbac_starter_roles()
+    source_role = selected_record.get("source_role", "")
+    if mode == "Add mapping":
+        if role_strategy == "Use recommended roles":
+            recommended_options = [entry["source_role"] for entry in recommended_roles] + ["Custom role"]
+            selected_recommended_role = st.selectbox(
+                "Recommended source role",
+                recommended_options,
+                disabled=not editable,
+            )
+            if selected_recommended_role == "Custom role":
+                source_role = ""
+            else:
+                source_role = selected_recommended_role
+                starter_match = next(
+                    (entry for entry in recommended_roles if entry["source_role"] == selected_recommended_role),
+                    {},
+                )
+                selected_record = {
+                    **selected_record,
+                    "source_role": starter_match.get("source_role", ""),
+                    "costops_role": starter_match.get("costops_role", default_role),
+                    "scope": starter_match.get("scope", "Mapped application access"),
+                    "status": "Ready for validation",
+                }
+        else:
+            suggested_option = st.selectbox(
+                "Suggested source role",
+                suggested_roles + ["Custom role"],
+                disabled=not editable,
+            )
+            if suggested_option != "Custom role":
+                source_role = suggested_option
+
+    form_cols = st.columns([1.15, 1, 1.25, 1], gap="small")
+    source_role_value = source_role or selected_record.get("source_role", "")
+    show_source_input = mode != "Remove mapping" and not (
+        mode == "Add mapping" and source_role_value and source_role_value != "Custom role"
+    )
+    if show_source_input:
+        source_role_value = form_cols[0].text_input(
+            "Source role",
+            value=source_role_value,
+            placeholder="SNOWFLAKE_COSTOPS_ADMIN",
+            disabled=not editable or mode == "Remove mapping",
+        )
+    else:
+        form_cols[0].text_input("Source role", value=source_role_value, disabled=True)
+    mapped_role = form_cols[1].selectbox(
+        "CostOps role",
+        ACCESS_ROLES,
+        index=ACCESS_ROLES.index(selected_record.get("costops_role", default_role))
+        if selected_record.get("costops_role", default_role) in ACCESS_ROLES
+        else 0,
+        disabled=not editable or mode == "Remove mapping",
+    )
+    mapping_scope = form_cols[2].text_input(
+        "Scope",
+        value=selected_record.get("scope", ""),
+        placeholder="Workflow and reporting",
+        disabled=not editable or mode == "Remove mapping",
+    )
+    mapping_state = form_cols[3].selectbox(
+        "Mapping status",
+        ENTERPRISE_STATUS_OPTIONS,
+        index=ENTERPRISE_STATUS_OPTIONS.index(selected_record.get("status", "Not configured"))
+        if selected_record.get("status", "Not configured") in ENTERPRISE_STATUS_OPTIONS
+        else 0,
+        disabled=not editable or mode == "Remove mapping",
+    )
+
+    if editable and save_mapping:
+        before_settings = settings.copy()
+        updated = [dict(entry) for entry in settings.get("enterprise_role_mappings", [])]
+        if mode == "Remove mapping":
+            if not selected_source:
+                st.error("Choose a source role to remove.")
+                st.stop()
+            updated = [entry for entry in updated if entry.get("source_role") != selected_source]
+        else:
+            payload = {
+                "source_role": source_role_value.strip(),
+                "costops_role": mapped_role,
+                "scope": mapping_scope.strip() or "Mapped application access",
+                "status": mapping_state,
+            }
+            if not payload["source_role"]:
+                st.error("Source role is required.")
+                st.stop()
+            if mode == "Edit mapping" and selected_source:
+                updated = [entry for entry in updated if entry.get("source_role") != selected_source]
+            else:
+                updated = [entry for entry in updated if entry.get("source_role") != payload["source_role"]]
+            updated.append(payload)
+        updated_settings = persist_app_settings(
+            st.session_state,
+            {
+                "enterprise_rbac_status": rbac_status,
+                "enterprise_rbac_mode": role_strategy,
+                "enterprise_default_role": default_role,
+                "enterprise_role_mapping_notes": mapping_notes,
+                "enterprise_role_mappings": sorted(updated, key=lambda entry: entry.get("source_role", "")),
+            },
+        )
+        log_enterprise_config_change(
+            st.session_state,
+            "RBAC Mapping",
+            before_settings,
+            updated_settings,
+            [
+                "enterprise_rbac_status",
+                "enterprise_rbac_mode",
+                "enterprise_default_role",
+                "enterprise_role_mapping_notes",
+                "enterprise_role_mappings",
+            ],
+            "enterprise_rbac_status",
+        )
+        st.success("RBAC mapping settings saved.")
+        st.rerun()
+
+    if editable and role_strategy == "Use recommended roles":
+        if st.button("Apply recommended starter mappings"):
+            before_settings = settings.copy()
+            starter_payload = [
+                {
+                    "source_role": entry["source_role"],
+                    "costops_role": entry["costops_role"],
+                    "scope": entry["scope"],
+                    "status": "Ready for validation",
+                }
+                for entry in recommended_roles
+            ]
+            updated_settings = persist_app_settings(
+                st.session_state,
+                {
+                    "enterprise_rbac_status": rbac_status,
+                    "enterprise_rbac_mode": role_strategy,
+                    "enterprise_default_role": default_role,
+                    "enterprise_role_mapping_notes": mapping_notes,
+                    "enterprise_role_mappings": starter_payload,
+                },
+            )
+            log_enterprise_config_change(
+                st.session_state,
+                "RBAC Mapping",
+                before_settings,
+                updated_settings,
+                [
+                    "enterprise_rbac_status",
+                    "enterprise_rbac_mode",
+                    "enterprise_default_role",
+                    "enterprise_role_mappings",
+                ],
+                "enterprise_rbac_status",
+            )
+            st.success("Recommended starter mappings applied.")
+            st.rerun()
+
+    if role_strategy == "Use recommended roles":
+        st.subheader("Recommended Snowflake Role Setup")
+        starter_rows = []
+        for entry in recommended_roles:
+            starter_rows.append(
+                {
+                    "Recommended Role": entry["source_role"],
+                    "Maps To": entry["costops_role"],
+                    "Purpose": entry["scope"],
+                }
+            )
+        st.dataframe(pd.DataFrame(starter_rows), use_container_width=True, hide_index=True)
+        st.code(
+            "\n".join(
+                [
+                    "-- Example starter SQL for a customer account",
+                    "CREATE ROLE IF NOT EXISTS COSTOPS_ADMIN;",
+                    "CREATE ROLE IF NOT EXISTS COSTOPS_OPERATOR;",
+                    "CREATE ROLE IF NOT EXISTS COSTOPS_VIEWER;",
+                    "",
+                    "-- Grant CostOps application roles to the customer roles",
+                    "GRANT APPLICATION ROLE <installed_app_name>.costops_admin TO ROLE COSTOPS_ADMIN;",
+                    "GRANT APPLICATION ROLE <installed_app_name>.costops_operator TO ROLE COSTOPS_OPERATOR;",
+                    "GRANT APPLICATION ROLE <installed_app_name>.costops_viewer TO ROLE COSTOPS_VIEWER;",
+                ]
+            ),
+            language="sql",
+        )
+    else:
+        st.caption(
+            "For mature environments, map existing Snowflake or identity roles into CostOps without forcing new role creation."
+        )
+
+    st.subheader("Mapping Coverage")
+    coverage_rows = []
+    for role_name in ACCESS_ROLES:
+        mapped_sources = mappings[mappings["costops_role"] == role_name] if not mappings.empty else pd.DataFrame()
+        statuses = ", ".join(sorted({status for status in mapped_sources.get("status", pd.Series(dtype=str)).tolist() if status})) or "Not configured"
+        coverage_rows.append(
+            {
+                "CostOps Role": role_name,
+                "Mapped Source Roles": int(len(mapped_sources)),
+                "Coverage Status": "Covered" if len(mapped_sources) else "Missing",
+                "Validation State": statuses,
+            }
+        )
+    st.dataframe(pd.DataFrame(coverage_rows), use_container_width=True, hide_index=True)
+
+    st.subheader("Current Role Mappings")
+    st.dataframe(
+        mappings.sort_values("source_role").rename(
+            columns={
+                "source_role": "Source Role",
+                "costops_role": "CostOps Role",
+                "scope": "Scope",
+                "status": "Status",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("Effective Access Preview")
+    preview_cols = st.columns([1.3, 1.1, 1.6], gap="small")
+    preview_source = preview_cols[0].selectbox(
+        "Preview source role",
+        ["Default fallback"] + mappings["source_role"].tolist(),
+        index=0,
+    )
+    if preview_source == "Default fallback":
+        resolved_role = default_role
+        preview_status = settings["enterprise_rbac_status"]
+        preview_scope = "Fallback role applied when no explicit mapping exists."
+    else:
+        preview_record = mappings[mappings["source_role"] == preview_source].iloc[0].to_dict()
+        resolved_role = preview_record.get("costops_role", default_role)
+        preview_status = preview_record.get("status", "Not configured")
+        preview_scope = preview_record.get("scope", "Mapped application access")
+    preview_cols[1].metric("Resolved CostOps role", resolved_role)
+    preview_cols[2].markdown(
+        f"**Validation state:** {preview_status}<br>**Scope:** {escape(preview_scope)}",
+        unsafe_allow_html=True,
+    )
+    st.dataframe(_rbac_permission_summary(resolved_role), use_container_width=True, hide_index=True)
+
+    permission_rows = []
+    for role_name, permissions in ROLE_PERMISSIONS.items():
+        permission_rows.append(
+            {
+                "CostOps Role": role_name,
+                "Admin Access": "Yes" if "admin" in permissions else "No",
+                "Workflow Actions": "Yes" if "operate" in permissions else "No",
+                "Assignment Updates": "Yes" if "assign" in permissions else "No",
+                "Sensitive Views": "Yes" if "view_sensitive" in permissions else "No",
+            }
+        )
+    st.subheader("CostOps Permission Matrix")
+    st.dataframe(pd.DataFrame(permission_rows), use_container_width=True, hide_index=True)
+
+
+def environments_page():
+    settings = current_app_settings(st.session_state)
+    plan_name, _ = current_costops_plan()
+    unlocked = has_entitlement("linked_dev_test")
+    editable = unlocked and has_permission("admin")
+
+    st.title("Environments")
+    st.caption("Define the production Snowflake account and register linked dev/test environments for validation.")
+    if not unlocked:
+        _enterprise_locked_message(plan_name, "Environments")
+    elif not has_permission("admin"):
+        st.info("Environments are visible in read-only mode for this session role.")
+
+    linked = pd.DataFrame(settings.get("enterprise_linked_environments", []))
+    if linked.empty:
+        linked = pd.DataFrame(columns=["environment", "account_locator", "purpose", "status"])
+
+    linked_rows = len(linked)
+    configured_accounts = int(linked["account_locator"].fillna("").astype(str).str.strip().ne("").sum()) if "account_locator" in linked else 0
+    active_linked = int((linked["status"] == "Active").sum()) if "status" in linked else 0
+    env_summary = st.columns(4, gap="small")
+    env_summary[0].metric("Production instance", "Defined" if settings["enterprise_prod_account"] else "Pending")
+    env_summary[1].metric("Linked validation envs", f"{linked_rows}")
+    env_summary[2].metric("Configured account locators", f"{configured_accounts}")
+    env_summary[3].metric("Active linked envs", f"{active_linked}")
+
+    prod_cols = st.columns([1, 1, 1, 1], gap="small")
+    production_status = prod_cols[0].selectbox(
+        "Production status",
+        ENTERPRISE_STATUS_OPTIONS,
+        index=ENTERPRISE_STATUS_OPTIONS.index(settings["enterprise_production_status"]),
+        disabled=not editable,
+    )
+    prod_account = prod_cols[1].text_input(
+        "Production Snowflake account",
+        value=settings["enterprise_prod_account"],
+        placeholder="ORG-ACCOUNT",
+        disabled=not editable,
+    )
+    prod_region = prod_cols[2].text_input(
+        "Region",
+        value=settings["enterprise_prod_region"],
+        placeholder="AWS us-east-1",
+        disabled=not editable,
+    )
+    app_instance = prod_cols[3].text_input(
+        "Installed app instance",
+        value=settings["enterprise_app_instance"],
+        placeholder="GRAINAI_COSTOPS_PROD",
+        disabled=not editable,
+    )
+    billing_scope = st.text_input("Billing scope", value=settings["enterprise_billing_scope"], disabled=not editable)
+
+    if settings["enterprise_prod_account"]:
+        st.success(
+            f"Enterprise billing is anchored to production account `{settings['enterprise_prod_account']}`. "
+            "Linked dev/test environments below are modeled as validation accounts, not separate production instances."
+        )
+    else:
+        st.info("Define the production Snowflake account first so linked validation environments have a clear billing anchor.")
+
+    env_status_cols = st.columns([1, 1.25, 0.9], gap="small", vertical_alignment="bottom")
+    with env_status_cols[0]:
+        linked_status = st.selectbox(
+            "Linked environment status",
+            ENTERPRISE_STATUS_OPTIONS,
+            index=ENTERPRISE_STATUS_OPTIONS.index(settings["enterprise_linked_environments_status"]),
+            disabled=not editable,
+        )
+    with env_status_cols[1]:
+        env_mode = st.segmented_control(
+            "Environment action",
+            ["Edit environment", "Remove environment", "Add environment"],
+            default="Edit environment",
+            width="stretch",
+        )
+    with env_status_cols[2]:
+        st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
+        save_environment = st.button("Save", type="primary", disabled=not editable, width="stretch")
+
+    selected_env = ""
+    selected_record = {}
+    if env_mode in {"Edit environment", "Remove environment"} and not linked.empty:
+        selected_env = st.selectbox("Environment name", [""] + linked["environment"].tolist())
+        if selected_env:
+            selected_record = linked[linked["environment"] == selected_env].iloc[0].to_dict()
+
+    manage_cols = st.columns([1, 1, 1.4, 1], gap="small")
+    env_name = manage_cols[0].text_input(
+        "Environment",
+        value=selected_record.get("environment", ""),
+        placeholder="Dev Validation",
+        disabled=not editable or env_mode == "Remove environment",
+    )
+    env_account = manage_cols[1].text_input(
+        "Account locator",
+        value=selected_record.get("account_locator", ""),
+        placeholder="ORG-ACCOUNT_DEV",
+        disabled=not editable or env_mode == "Remove environment",
+    )
+    env_purpose = manage_cols[2].text_input(
+        "Purpose",
+        value=selected_record.get("purpose", ""),
+        placeholder="Pre-production validation",
+        disabled=not editable or env_mode == "Remove environment",
+    )
+    env_state = manage_cols[3].selectbox(
+        "Environment status",
+        ENTERPRISE_STATUS_OPTIONS,
+        index=ENTERPRISE_STATUS_OPTIONS.index(selected_record.get("status", "Not configured"))
+        if selected_record.get("status", "Not configured") in ENTERPRISE_STATUS_OPTIONS
+        else 0,
+        disabled=not editable or env_mode == "Remove environment",
+    )
+
+    if editable and save_environment:
+        before_settings = settings.copy()
+        updated = [dict(entry) for entry in settings.get("enterprise_linked_environments", [])]
+        if env_mode == "Remove environment":
+            if not selected_env:
+                st.error("Choose an environment to remove.")
+                st.stop()
+            updated = [entry for entry in updated if entry.get("environment") != selected_env]
+        else:
+            payload = {
+                "environment": env_name.strip(),
+                "account_locator": env_account.strip(),
+                "purpose": env_purpose.strip() or "Validation",
+                "status": env_state,
+            }
+            if not payload["environment"]:
+                st.error("Environment name is required.")
+                st.stop()
+            if env_mode == "Edit environment" and selected_env:
+                updated = [entry for entry in updated if entry.get("environment") != selected_env]
+            else:
+                updated = [entry for entry in updated if entry.get("environment") != payload["environment"]]
+            updated.append(payload)
+        updated_settings = persist_app_settings(
+            st.session_state,
+            {
+                "enterprise_production_status": production_status,
+                "enterprise_prod_account": prod_account,
+                "enterprise_prod_region": prod_region,
+                "enterprise_app_instance": app_instance,
+                "enterprise_billing_scope": billing_scope,
+                "enterprise_linked_environments_status": linked_status,
+                "enterprise_linked_environments": sorted(updated, key=lambda entry: entry.get("environment", "")),
+            },
+        )
+        log_enterprise_config_change(
+            st.session_state,
+            "Environments",
+            before_settings,
+            updated_settings,
+            [
+                "enterprise_production_status",
+                "enterprise_prod_account",
+                "enterprise_prod_region",
+                "enterprise_app_instance",
+                "enterprise_billing_scope",
+                "enterprise_linked_environments_status",
+                "enterprise_linked_environments",
+            ],
+            "enterprise_linked_environments_status",
+        )
+        st.success("Environment settings saved.")
+        st.rerun()
+
+    st.subheader("Environment Readiness")
+    readiness_rows = [
+        {
+            "Environment Type": "Production",
+            "Name": settings["enterprise_app_instance"] or "Production instance pending",
+            "Account": settings["enterprise_prod_account"] or "Not configured",
+            "Purpose": "Billable production instance",
+            "Status": settings["enterprise_production_status"],
+        }
+    ]
+    for entry in linked.to_dict("records"):
+        readiness_rows.append(
+            {
+                "Environment Type": "Validation",
+                "Name": entry.get("environment", ""),
+                "Account": entry.get("account_locator", "") or "Not configured",
+                "Purpose": entry.get("purpose", "") or "Validation",
+                "Status": entry.get("status", "Not configured"),
+            }
+        )
+    st.dataframe(pd.DataFrame(readiness_rows), use_container_width=True, hide_index=True)
+
+    st.subheader("Linked Validation Environments")
+    st.dataframe(
+        linked.sort_values("environment").rename(
+            columns={
+                "environment": "Environment",
+                "account_locator": "Account Locator",
+                "purpose": "Purpose",
+                "status": "Status",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def persistence_page():
+    settings = current_app_settings(st.session_state)
+    plan_name, _ = current_costops_plan()
+    unlocked = has_entitlement("dedicated_persistence")
+    editable = unlocked and has_permission("admin")
+
+    st.title("Persistence")
+    st.caption("Track the dedicated persistence target, isolation model, retention, backups, and restore readiness.")
+    if not unlocked:
+        _enterprise_locked_message(plan_name, "Dedicated Persistence")
+    elif not has_permission("admin"):
+        st.info("Persistence settings are visible in read-only mode for this session role.")
+
+    persistence_target_options = ["Dedicated Postgres", "Managed Postgres", "Marketplace-managed store", "Custom"]
+    isolation_options = ["Tenant-isolated schema", "Tenant-isolated database", "Dedicated cluster", "Custom"]
+    retention_options = ["12 months", "24 months", "36 months", "Custom"]
+    backup_options = ["Not configured", "Daily", "Hourly", "Custom"]
+
+    persistence_summary = st.columns(4, gap="small")
+    persistence_summary[0].metric("Persistence status", settings["enterprise_persistence_status"])
+    persistence_summary[1].metric("Target", settings["enterprise_persistence_target"])
+    persistence_summary[2].metric("Retention", settings["enterprise_retention"])
+    persistence_summary[3].metric("Restore readiness", settings["enterprise_restore_test_status"])
+
+    if settings["enterprise_persistence_status"] == "Active":
+        st.success(
+            f"Dedicated persistence is marked active using `{settings['enterprise_persistence_target']}` "
+            f"with `{settings['enterprise_persistence_isolation']}` isolation."
+        )
+    else:
+        st.info(
+            "Use this page to define where enterprise data lives, how it is isolated, and whether backup "
+            "and restore workflows are ready for validation."
+        )
+
+    top_cols = st.columns([1, 1, 1], gap="small")
+    persistence_status = top_cols[0].selectbox(
+        "Persistence status",
+        ENTERPRISE_STATUS_OPTIONS,
+        index=ENTERPRISE_STATUS_OPTIONS.index(settings["enterprise_persistence_status"]),
+        disabled=not editable,
+    )
+    persistence_target = top_cols[1].selectbox(
+        "Persistence target",
+        persistence_target_options,
+        index=persistence_target_options.index(settings["enterprise_persistence_target"])
+        if settings["enterprise_persistence_target"] in persistence_target_options
+        else 0,
+        disabled=not editable,
+    )
+    isolation = top_cols[2].selectbox(
+        "Isolation model",
+        isolation_options,
+        index=isolation_options.index(settings["enterprise_persistence_isolation"])
+        if settings["enterprise_persistence_isolation"] in isolation_options
+        else 0,
+        disabled=not editable,
+    )
+
+    action_cols = st.columns([1.8, 1.2, 1.2, 0.85, 1.6], gap="small", vertical_alignment="bottom")
+    with action_cols[0]:
+        retention = st.selectbox(
+            "Retention",
+            retention_options,
+            index=retention_options.index(settings["enterprise_retention"])
+            if settings["enterprise_retention"] in retention_options
+            else 1,
+            disabled=not editable,
+        )
+    with action_cols[1]:
+        backup_status = st.selectbox(
+            "Backup status",
+            backup_options,
+            index=backup_options.index(settings["enterprise_backup_status"])
+            if settings["enterprise_backup_status"] in backup_options
+            else 0,
+            disabled=not editable,
+        )
+    with action_cols[2]:
+        restore_status = st.selectbox(
+            "Restore test status",
+            ENTERPRISE_STATUS_OPTIONS,
+            index=ENTERPRISE_STATUS_OPTIONS.index(settings["enterprise_restore_test_status"]),
+            disabled=not editable,
+        )
+    with action_cols[3]:
+        st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
+        save_persistence = st.button("Save", type="primary", disabled=not editable, width="stretch")
+    with action_cols[4]:
+        st.caption("Capture the operating target, isolation posture, retention, and backup/restore state.")
+
+    if editable and save_persistence:
+        before_settings = settings.copy()
+        updated_settings = persist_app_settings(
+            st.session_state,
+            {
+                "enterprise_persistence_status": persistence_status,
+                "enterprise_persistence_target": persistence_target,
+                "enterprise_persistence_isolation": isolation,
+                "enterprise_retention": retention,
+                "enterprise_backup_status": backup_status,
+                "enterprise_restore_test_status": restore_status,
+            },
+        )
+        log_enterprise_config_change(
+            st.session_state,
+            "Persistence",
+            before_settings,
+            updated_settings,
+            [
+                "enterprise_persistence_status",
+                "enterprise_persistence_target",
+                "enterprise_persistence_isolation",
+                "enterprise_retention",
+                "enterprise_backup_status",
+                "enterprise_restore_test_status",
+            ],
+            "enterprise_persistence_status",
+        )
+        st.success("Persistence settings saved.")
+        st.rerun()
+
+    st.subheader("Persistence Readiness")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Area": "Persistence Target",
+                    "Current State": persistence_target,
+                    "Readiness": persistence_status,
+                    "Notes": "Primary data store for enterprise configuration and operating history.",
+                },
+                {
+                    "Area": "Isolation Model",
+                    "Current State": isolation,
+                    "Readiness": persistence_status,
+                    "Notes": "Controls tenant separation for enterprise data.",
+                },
+                {
+                    "Area": "Retention",
+                    "Current State": retention,
+                    "Readiness": "Configured" if retention else "Not configured",
+                    "Notes": "Intended operating window for persisted application data.",
+                },
+                {
+                    "Area": "Backup Cadence",
+                    "Current State": backup_status,
+                    "Readiness": "Ready for validation" if backup_status != "Not configured" else "Not configured",
+                    "Notes": "Expected backup operating rhythm for the persistence layer.",
+                },
+                {
+                    "Area": "Restore Test",
+                    "Current State": restore_status,
+                    "Readiness": restore_status,
+                    "Notes": "Operational readiness for recovery validation.",
+                },
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def sso_identity_page():
+    settings = current_app_settings(st.session_state)
+    plan_name, _ = current_costops_plan()
+    unlocked = has_entitlement("sso")
+    editable = unlocked and has_permission("admin")
+
+    st.title("SSO & Identity")
+    st.caption("Capture identity-provider metadata, domain allowlists, and validation readiness for enterprise sign-in.")
+    if not unlocked:
+        _enterprise_locked_message(plan_name, "SSO & Identity")
+    elif not has_permission("admin"):
+        st.info("SSO & Identity is visible in read-only mode for this session role.")
+
+    sso_provider_options = ["Not configured", "Okta", "Microsoft Entra ID", "Ping Identity", "Google Workspace", "Other"]
+    protocol_options = ["SAML 2.0", "OIDC", "Marketplace-managed"]
+
+    sso_summary = st.columns(4, gap="small")
+    sso_summary[0].metric("SSO status", settings["enterprise_sso_status"])
+    sso_summary[1].metric("Identity provider", settings["enterprise_sso_provider"])
+    sso_summary[2].metric("Protocol", settings["enterprise_identity_protocol"])
+    sso_summary[3].metric("Allowed domain", settings["enterprise_allowed_domain"] or "Not configured")
+
+    if settings["enterprise_sso_status"] == "Active":
+        st.success(
+            f"Enterprise identity is marked active using `{settings['enterprise_sso_provider']}` "
+            f"over `{settings['enterprise_identity_protocol']}`."
+        )
+    else:
+        st.info(
+            "Use this page to define the identity provider, allowed domain, metadata handoff, and "
+            "validation readiness before any production SSO integration work."
+        )
+
+    cols = st.columns(3, gap="small")
+    sso_status = cols[0].selectbox(
+        "SSO status",
+        ENTERPRISE_STATUS_OPTIONS,
+        index=ENTERPRISE_STATUS_OPTIONS.index(settings["enterprise_sso_status"]),
+        disabled=not editable,
+    )
+    sso_provider = cols[1].selectbox(
+        "SSO provider",
+        sso_provider_options,
+        index=sso_provider_options.index(settings["enterprise_sso_provider"])
+        if settings["enterprise_sso_provider"] in sso_provider_options
+        else 0,
+        disabled=not editable,
+    )
+    identity_protocol = cols[2].selectbox(
+        "Identity protocol",
+        protocol_options,
+        index=protocol_options.index(settings["enterprise_identity_protocol"])
+        if settings["enterprise_identity_protocol"] in protocol_options
+        else 0,
+        disabled=not editable,
+    )
+
+    action_cols = st.columns([1.2, 1.5, 1.25, 0.8, 1.5], gap="small", vertical_alignment="bottom")
+    with action_cols[0]:
+        allowed_domain = st.text_input(
+            "Allowed domain",
+            value=settings["enterprise_allowed_domain"],
+            placeholder="company.com",
+            disabled=not editable,
+        )
+    with action_cols[1]:
+        metadata_url = st.text_input(
+            "Metadata URL",
+            value=settings["enterprise_metadata_url"],
+            placeholder="https://idp.example.com/metadata",
+            disabled=not editable,
+        )
+    with action_cols[2]:
+        entity_id = st.text_input(
+            "Entity ID",
+            value=settings["enterprise_entity_id"],
+            placeholder="urn:costops:enterprise",
+            disabled=not editable,
+        )
+    with action_cols[3]:
+        st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
+        save_sso = st.button("Save", type="primary", disabled=not editable, width="stretch")
+    with action_cols[4]:
+        st.caption("Capture provider metadata and domain rules for enterprise identity validation.")
+
+    sso_contact = st.text_input(
+        "Implementation contact",
+        value=settings["enterprise_sso_contact"],
+        placeholder="identity-admin@company.com",
+        disabled=not editable,
+    )
+
+    if editable and save_sso:
+        before_settings = settings.copy()
+        updated_settings = persist_app_settings(
+            st.session_state,
+            {
+                "enterprise_sso_status": sso_status,
+                "enterprise_sso_provider": sso_provider,
+                "enterprise_identity_protocol": identity_protocol,
+                "enterprise_allowed_domain": allowed_domain,
+                "enterprise_metadata_url": metadata_url,
+                "enterprise_entity_id": entity_id,
+                "enterprise_sso_contact": sso_contact,
+            },
+        )
+        log_enterprise_config_change(
+            st.session_state,
+            "SSO & Identity",
+            before_settings,
+            updated_settings,
+            [
+                "enterprise_sso_status",
+                "enterprise_sso_provider",
+                "enterprise_identity_protocol",
+                "enterprise_allowed_domain",
+                "enterprise_metadata_url",
+                "enterprise_entity_id",
+                "enterprise_sso_contact",
+            ],
+            "enterprise_sso_status",
+        )
+        st.success("SSO settings saved.")
+        st.rerun()
+
+    st.subheader("Identity Readiness")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Area": "Identity Provider",
+                    "Current State": sso_provider,
+                    "Readiness": sso_status,
+                    "Notes": "Selected provider for enterprise identity integration.",
+                },
+                {
+                    "Area": "Identity Protocol",
+                    "Current State": identity_protocol,
+                    "Readiness": sso_status,
+                    "Notes": "Expected authentication protocol for enterprise sign-in.",
+                },
+                {
+                    "Area": "Allowed Domain",
+                    "Current State": allowed_domain or "Not configured",
+                    "Readiness": "Configured" if allowed_domain else "Not configured",
+                    "Notes": "Primary email domain or tenant boundary for user access.",
+                },
+                {
+                    "Area": "Metadata URL",
+                    "Current State": metadata_url or "Not configured",
+                    "Readiness": "Ready for validation" if metadata_url else "Not configured",
+                    "Notes": "IdP metadata location used for implementation handoff.",
+                },
+                {
+                    "Area": "Implementation Contact",
+                    "Current State": sso_contact or "Not configured",
+                    "Readiness": "Configured" if sso_contact else "Action needed",
+                    "Notes": "Primary identity or admin contact for rollout and validation.",
+                },
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def sla_support_page():
+    settings = current_app_settings(st.session_state)
+    plan_name, _ = current_costops_plan()
+    unlocked = has_entitlement("sla")
+    editable = unlocked and has_permission("admin")
+
+    st.title("SLA & Support")
+    st.caption("Track support tier, response expectations, deployment ownership, and escalation path for enterprise accounts.")
+    if not unlocked:
+        _enterprise_locked_message(plan_name, "SLA & Support")
+    elif not has_permission("admin"):
+        st.info("SLA & Support is visible in read-only mode for this session role.")
+
+    support_summary = st.columns(4, gap="small")
+    support_summary[0].metric("SLA status", settings["enterprise_sla_status"])
+    support_summary[1].metric("Support tier", settings["enterprise_support_tier"])
+    support_summary[2].metric("Response window", settings["enterprise_response_sla"])
+    support_summary[3].metric("Deployment owner", settings["enterprise_deployment_owner"] or "Not assigned")
+
+    if settings["enterprise_sla_status"] == "Active":
+        st.success(
+            f"Enterprise support is marked active with `{settings['enterprise_support_tier']}` "
+            f"and a `{settings['enterprise_response_sla']}` response target."
+        )
+    else:
+        st.info(
+            "Use this page to define the enterprise support tier, expected response window, named owner, "
+            "and escalation model before go-live."
+        )
+
+    cols = st.columns(3, gap="small")
+    sla_status = cols[0].selectbox(
+        "SLA status",
+        ENTERPRISE_STATUS_OPTIONS,
+        index=ENTERPRISE_STATUS_OPTIONS.index(settings["enterprise_sla_status"]),
+        disabled=not editable,
+    )
+    support_tier = cols[1].selectbox(
+        "Support tier",
+        ENTERPRISE_SUPPORT_TIERS,
+        index=ENTERPRISE_SUPPORT_TIERS.index(settings["enterprise_support_tier"])
+        if settings["enterprise_support_tier"] in ENTERPRISE_SUPPORT_TIERS
+        else 0,
+        disabled=not editable,
+    )
+    response_sla = cols[2].selectbox(
+        "Response window",
+        ENTERPRISE_RESPONSE_WINDOWS,
+        index=ENTERPRISE_RESPONSE_WINDOWS.index(settings["enterprise_response_sla"])
+        if settings["enterprise_response_sla"] in ENTERPRISE_RESPONSE_WINDOWS
+        else 1,
+        disabled=not editable,
+    )
+
+    action_cols = st.columns([1.3, 1.9, 0.8, 1.5], gap="small", vertical_alignment="bottom")
+    with action_cols[0]:
+        deployment_owner = st.text_input(
+            "Deployment owner",
+            value=settings["enterprise_deployment_owner"],
+            placeholder="customer-success@grainai.com",
+            disabled=not editable,
+        )
+    with action_cols[1]:
+        escalation_path = st.text_input(
+            "Escalation path",
+            value=settings["enterprise_escalation_path"],
+            placeholder="Support -> Platform -> Engineering",
+            disabled=not editable,
+        )
+    with action_cols[2]:
+        st.markdown("<div style='height: 1.8rem;'></div>", unsafe_allow_html=True)
+        save_sla = st.button("Save", type="primary", disabled=not editable, width="stretch")
+    with action_cols[3]:
+        st.caption("Define the support owner, escalation route, and response commitment.")
+
+    support_notes = st.text_area(
+        "Support notes",
+        value=settings["enterprise_support_notes"],
+        placeholder="Named contacts, support exclusions, go-live conditions",
+        disabled=not editable,
+    )
+    if editable and save_sla:
+        before_settings = settings.copy()
+        updated_settings = persist_app_settings(
+            st.session_state,
+            {
+                "enterprise_sla_status": sla_status,
+                "enterprise_support_tier": support_tier,
+                "enterprise_response_sla": response_sla,
+                "enterprise_deployment_owner": deployment_owner,
+                "enterprise_escalation_path": escalation_path,
+                "enterprise_support_notes": support_notes,
+            },
+        )
+        log_enterprise_config_change(
+            st.session_state,
+            "SLA & Support",
+            before_settings,
+            updated_settings,
+            [
+                "enterprise_sla_status",
+                "enterprise_support_tier",
+                "enterprise_response_sla",
+                "enterprise_deployment_owner",
+                "enterprise_escalation_path",
+                "enterprise_support_notes",
+            ],
+            "enterprise_sla_status",
+        )
+        st.success("SLA & support settings saved.")
+        st.rerun()
+
+    st.subheader("Support Readiness")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Area": "Support Tier",
+                    "Current State": support_tier,
+                    "Readiness": sla_status,
+                    "Notes": "Named enterprise support level for the account.",
+                },
+                {
+                    "Area": "Response Window",
+                    "Current State": response_sla,
+                    "Readiness": sla_status,
+                    "Notes": "Expected response target for support handling.",
+                },
+                {
+                    "Area": "Deployment Owner",
+                    "Current State": deployment_owner or "Not assigned",
+                    "Readiness": "Configured" if deployment_owner else "Action needed",
+                    "Notes": "Primary owner coordinating rollout and support readiness.",
+                },
+                {
+                    "Area": "Escalation Path",
+                    "Current State": escalation_path or "Not configured",
+                    "Readiness": "Configured" if escalation_path else "Action needed",
+                    "Notes": "Expected internal route for issues that need escalation.",
+                },
+                {
+                    "Area": "Support Notes",
+                    "Current State": "Captured" if support_notes.strip() else "Not configured",
+                    "Readiness": "Configured" if support_notes.strip() else "Not configured",
+                    "Notes": "Additional support commitments, exclusions, or go-live notes.",
+                },
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def _render_enterprise_feature_grid(locked):
@@ -4383,6 +6333,11 @@ navigation_pages = {
     "Admin": [
         st.Page(upgrade_plan_page, title="Upgrade Plan", icon=":material/workspace_premium:", url_path="upgrade_plan"),
         st.Page(enterprise_controls_page, title="Enterprise Controls", icon=":material/admin_panel_settings:", url_path="enterprise_controls"),
+        st.Page(rbac_mapping_page, title="RBAC Mapping", icon=":material/admin_panel_settings:", url_path="rbac_mapping"),
+        st.Page(environments_page, title="Environments", icon=":material/account_tree:", url_path="enterprise_environments"),
+        st.Page(persistence_page, title="Persistence", icon=":material/database:", url_path="enterprise_persistence"),
+        st.Page(sso_identity_page, title="SSO & Identity", icon=":material/badge:", url_path="enterprise_identity"),
+        st.Page(sla_support_page, title="SLA & Support", icon=":material/support_agent:", url_path="enterprise_support"),
         st.Page(users_roles_page, title="Users and Roles", icon=":material/group:"),
         st.Page(settings_page, title="Settings", icon=":material/settings:"),
     ],

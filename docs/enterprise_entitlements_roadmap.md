@@ -30,6 +30,112 @@ The Streamlit app now has a lightweight in-app entitlement model:
 
 Enterprise Controls is currently a product/design surface, not a complete production security implementation.
 
+### Implementation Update (2026-05-20)
+
+The Enterprise admin surface has now been expanded beyond a single overview page. The Admin navigation includes:
+
+- Upgrade Plan
+- Enterprise Controls
+- RBAC Mapping
+- Environments
+- Persistence
+- SSO & Identity
+- SLA & Support
+- Users and Roles
+- Settings
+
+The new Enterprise pages currently:
+
+- save configuration into the app settings state
+- track configuration readiness using:
+  - Not configured
+  - Ready for validation
+  - Active
+  - Action needed
+- support product demos and internal workflow reviews
+- reflect the current Enterprise pricing and one-production-account billing model
+
+They do not yet provide production SSO, hard security enforcement, Marketplace entitlement sync, or provisioned dedicated persistence.
+
+RBAC Mapping is now the most mature of the enterprise admin pages. It includes:
+
+- mapping status and role-coverage summaries
+- editable source-role to CostOps-role mapping records
+- effective access preview for a selected source role
+- a permission matrix that shows the current Admin / Operator / Viewer capabilities
+- two onboarding paths:
+  - map existing Snowflake or identity roles
+  - use recommended starter roles with generated Snowflake SQL guidance
+
+This remains an in-app admin workflow surface rather than full backend authorization enforcement.
+
+Environments now includes:
+
+- a production-instance summary with billing anchor language
+- linked validation environment counts and status metrics
+- add, edit, and remove actions for dev/test environments
+- an environment-readiness table that separates the billable production instance from validation accounts
+
+Persistence now includes:
+
+- top-level health and readiness metrics
+- explicit target and isolation selections
+- retention, backup cadence, and restore-test tracking
+- a readiness table that explains the current persistence posture in product language
+
+SSO & Identity now includes:
+
+- top-level identity status and provider metrics
+- explicit provider and protocol selections
+- allowed-domain, metadata URL, entity ID, and implementation-contact capture
+- an identity-readiness table that frames the current SSO posture in implementation language
+
+SLA & Support now includes:
+
+- top-level support status and response metrics
+- explicit support-tier and response-window selections
+- deployment-owner and escalation-path capture
+- a support-readiness table that frames commitments and operational ownership in product language
+
+Enterprise Controls now also functions as a rollup dashboard. It includes:
+
+- an enterprise readiness score
+- active / ready / action-needed counts
+- rollout blocker callouts
+- a readiness table across the enterprise admin areas
+- recent enterprise configuration audit events
+
+The app also now surfaces enterprise operating context in working pages such as Scan & Schedule and Reports so the saved enterprise configuration affects user-facing workflow context.
+
+Enterprise config audit logging is now in place. It includes:
+
+- a dedicated local enterprise configuration audit store
+- saved admin events for:
+  - RBAC Mapping
+  - Environments
+  - Persistence
+  - SSO & Identity
+  - SLA & Support
+- timestamps, actor, area, changed fields, status, and details
+- a dedicated Enterprise Config Audit Trail report for PDF, Excel, and HTML export
+
+RBAC behavior wiring has also advanced beyond a static admin form. The app now supports:
+
+- manual CostOps role simulation
+- source-role-to-CostOps-role simulation using saved RBAC mappings
+- resolved-role display in the sidebar and settings
+- permission messages that explain which resolved role is active and why an action is locked
+
+Environment-aware operating context is now included in:
+
+- Scan & Schedule
+- on-screen report context
+- PDF export headers
+- Excel executive summary sheets
+- HTML report packets
+
+This means the production Snowflake account, linked validation environments, app instance, and billing scope now appear in the working output surfaces rather than living only inside Admin.
+
 ## Recommended Build Levels
 
 ### Level 1: Product Demo UI
