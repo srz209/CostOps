@@ -1,7 +1,0 @@
-name: costops_native_app
-channels:
-  - snowflake
-dependencies:
-  - streamlit
-  - pandas
-  - plotly

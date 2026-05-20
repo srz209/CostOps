@@ -1,12 +1,13 @@
-import streamlit as st
+from pathlib import Path
+import os
+import sys
 
 
-st.set_page_config(page_title="Cost Optimization", layout="wide")
+os.environ["COSTOPS_NATIVE_APP"] = "1"
 
-st.title("Cost Optimization")
-st.caption("Draft Snowflake Native App entrypoint.")
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-st.info(
-    "This package placeholder validates the Native App manifest and Streamlit entrypoint. "
-    "After the local POC stabilizes, copy the production Streamlit app and costops package into this directory."
-)
+shared_entrypoint = ROOT / "app" / "streamlit_app.py"
+exec(compile(shared_entrypoint.read_text(), str(shared_entrypoint), "exec"), globals())

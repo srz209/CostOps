@@ -136,6 +136,61 @@ Environment-aware operating context is now included in:
 
 This means the production Snowflake account, linked validation environments, app instance, and billing scope now appear in the working output surfaces rather than living only inside Admin.
 
+### Native App Phase 1 Update (2026-05-20)
+
+The first native-compatible control-plane foundation is now in place.
+
+Phase 1 currently includes:
+
+- Snowflake DDL for enterprise-native control-plane objects in `sql/app/003_enterprise_control_plane.sql`
+- a Snowflake config snapshot table
+- a Snowflake enterprise user directory table
+- a Snowflake enterprise config audit log table
+- an enterprise readiness view
+- repository support to sync the current in-app enterprise state into Snowflake
+- a manual `Sync native control plane` action in the app
+
+This means the Enterprise admin model is no longer only local demo state. The app can now push its saved enterprise settings, user directory, and enterprise config audit trail into Snowflake as the beginning of a native system of record.
+
+Still deferred to later phases:
+
+- moving the analysis runner into Snowflake execution paths
+- replacing local session/runtime stores completely
+- adapting unsupported Streamlit features for Native App constraints
+- full native packaging and install validation
+
+### Native App Phase 2 Update (2026-05-20)
+
+The second native-compatible pass now focuses on UI/runtime adaptation rather than new product surface area.
+
+Phase 2 currently includes:
+
+- a native compatibility mode in the shared Streamlit app
+- page configuration that avoids unsupported title and icon assumptions in native mode
+- session-backed memoization in place of `st.cache_data`
+- native-safe notification fallback in place of direct toast dependence
+- a simpler sidebar navigation path that avoids depending on `st.navigation`
+- a native package entrypoint that boots the shared app in compatibility mode for local validation
+
+This keeps the current POC usable locally while making it easier to evaluate which screens and workflows can survive inside a Snowflake Native App runtime with minimal redesign.
+
+### Native App Phase 3 Update (2026-05-20)
+
+The Phase 3 pass focuses on package readiness and native-safe surface tightening.
+
+Phase 3 currently includes:
+
+- a tighter native package setup script that now creates:
+  - enterprise control-plane tables
+  - enterprise readiness view
+  - recommendation workflow procedures
+- a native Streamlit directory structure that places `environment.yml` beside the app entrypoint
+- a pinned native dependency file for Streamlit warehouse runtime validation
+- a package validation checklist for provider-side and consumer-side install testing
+- native-safe report behavior that disables export delivery until file handling and supported dependencies are validated inside Snowflake
+
+This does not yet mean the package is production-ready, but it is much closer to a real private-install validation candidate than the earlier scaffold.
+
 ## Recommended Build Levels
 
 ### Level 1: Product Demo UI

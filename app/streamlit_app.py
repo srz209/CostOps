@@ -1,16 +1,22 @@
 from pathlib import Path
 from html import escape
 from io import BytesIO
+import os
 import sys
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import landscape, letter
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    REPORTLAB_AVAILABLE = True
+except Exception:
+    REPORTLAB_AVAILABLE = False
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -42,7 +48,11 @@ from costops.data.recommendation_store import (
     update_recommendation_assignment,
     update_recommendation_status,
 )
-from costops.data.snowflake_repository import initialize_app_schema, persist_analysis_result
+from costops.data.snowflake_repository import (
+    initialize_app_schema,
+    persist_analysis_result,
+    persist_enterprise_control_plane,
+)
 from costops.data.snowflake_loader import load_account_usage_snapshot, load_warehouse_metering_history, test_connection
 from costops.rules.rule_catalog import RULE_CATALOG
 from costops.services.analysis_runner import AnalysisConfig, run_environment_analysis
@@ -59,12 +69,24 @@ from costops.services.metrics import (
 
 
 
-st.set_page_config(
-    page_title="GrainAI CostOps",
-    page_icon="",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+NATIVE_APP_MODE = os.environ.get("COSTOPS_NATIVE_APP", "0") == "1"
+
+
+def configure_page():
+    page_config = {
+        "layout": "wide",
+        "initial_sidebar_state": "expanded",
+    }
+    if not NATIVE_APP_MODE:
+        page_config["page_title"] = "GrainAI CostOps"
+        page_config["page_icon"] = ""
+    try:
+        st.set_page_config(**page_config)
+    except Exception:
+        pass
+
+
+configure_page()
 
 _BASE_STREAMLIT_DATAFRAME = st.dataframe
 
@@ -642,14 +664,32 @@ ENTERPRISE_SUPPORT_TIERS = ["Enterprise standard", "Priority", "Named success ma
 ENTERPRISE_RESPONSE_WINDOWS = ["4 business hours", "Next business day", "24x7 severity 1", "Custom"]
 
 
-@st.cache_data
 def load_data():
-    return load_sample_data()
+    cache_key = "costops_sample_data_cache"
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = load_sample_data()
+    return st.session_state[cache_key]
 
 
-@st.cache_data(ttl=900)
 def load_live_warehouse_metering(config, lookback_days, credit_price):
-    return load_warehouse_metering_history(config, lookback_days=lookback_days, credit_price=credit_price)
+    cache_key = "costops_live_warehouse_metering_cache"
+    cache_state = st.session_state.setdefault(cache_key, {})
+    cache_token = (
+        config.get("account"),
+        config.get("user"),
+        config.get("warehouse"),
+        int(lookback_days),
+        float(credit_price),
+    )
+    cached = cache_state.get("token")
+    if cached != cache_token:
+        cache_state["token"] = cache_token
+        cache_state["data"] = load_warehouse_metering_history(
+            config,
+            lookback_days=lookback_days,
+            credit_price=credit_price,
+        )
+    return cache_state["data"]
 
 
 def get_snowflake_config():
@@ -711,6 +751,17 @@ def permission_message(permission):
         f"{'Source role ' + context['source_role'] + ' resolves to this role. ' if context['simulation_mode'] == 'Source role mapping' else ''}"
         f"This action requires {' or '.join(required_roles)}."
     )
+
+
+def notify_user(message, level="success"):
+    if not NATIVE_APP_MODE and hasattr(st, "toast"):
+        try:
+            st.toast(message)
+            return
+        except Exception:
+            pass
+    fallback = getattr(st, level, st.info)
+    fallback(message)
 
 
 data = load_data()
@@ -1043,7 +1094,7 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
                     assigned_owner,
                     AS_OF_DATE,
                 )
-                st.toast(f"{selected_recommendation_id} ownership updated.")
+                notify_user(f"{selected_recommendation_id} ownership updated.")
                 st.rerun()
             assignment_action_cols[1].caption(
                 "Assign the owner, team, role, and due date for this recommendation."
@@ -1079,7 +1130,7 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
                         notes,
                         AS_OF_DATE,
                     )
-                    st.toast(f"{selected_recommendation_id} moved to {status}.")
+                    notify_user(f"{selected_recommendation_id} moved to {status}.")
                     st.rerun()
     with right:
         st.caption("Generated SQL or implementation guidance")
@@ -1090,7 +1141,7 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
             disabled=not has_permission("operate"),
         ):
             log_sql_copied(st.session_state, selected_recommendation_id, assigned_owner, AS_OF_DATE + pd.Timedelta(hours=12))
-            st.toast("SQL copy event logged.")
+            notify_user("SQL copy event logged.")
             st.rerun()
         st.caption("Lifecycle")
         lifecycle = pd.DataFrame(
@@ -1740,6 +1791,22 @@ def log_enterprise_config_change(session_state, area, before, after, tracked_fie
     )
 
 
+def sync_native_control_plane(settings_snapshot, config=None):
+    config = config or snowflake_config
+    if not config:
+        return False, "No Snowflake secrets found. Add credentials before syncing the native control plane."
+    try:
+        initialize_app_schema(config)
+        persist_enterprise_control_plane(
+            config,
+            settings_snapshot,
+            enterprise_audit_frame(st.session_state),
+        )
+    except Exception as exc:
+        return False, f"Native sync failed: {exc}"
+    return True, "Enterprise control-plane settings, user directory, and config audit trail were synced to Snowflake."
+
+
 def executive_report_context(
     report_type,
     period,
@@ -2336,6 +2403,8 @@ def build_pdf_report(
     selected_sections,
     report_detail,
 ):
+    if not REPORTLAB_AVAILABLE:
+        raise RuntimeError("PDF export is unavailable in this runtime because ReportLab is not installed.")
     money_columns = report_money_columns()
     limits = REPORT_DETAIL_LIMITS[report_detail]
     rename_map = {
@@ -3541,6 +3610,7 @@ def reports_page():
         enterprise_config_audit_report,
         enterprise_config_area_report,
     )
+    native_export_mode = NATIVE_APP_MODE
     action_cols = st.columns([1.15, 1.12, 1.05, 2.9], gap="small", vertical_alignment="top")
     with action_cols[0]:
         report_detail = st.selectbox(
@@ -3550,10 +3620,21 @@ def reports_page():
         )
         st.markdown('<div class="control-help">Amount of recommendation and audit detail included.</div>', unsafe_allow_html=True)
     with action_cols[1]:
-        download_format = st.radio("Download format", ["PDF", "Excel", "HTML"], horizontal=True, index=0)
-        st.markdown('<div class="control-help">Choose the file type for this report.</div>', unsafe_allow_html=True)
+        if native_export_mode:
+            download_format = "Disabled"
+            st.text_input("Download format", value="On-screen only", disabled=True, label_visibility="visible")
+            st.markdown(
+                '<div class="control-help">Native mode keeps exports disabled until package delivery and supported dependencies are validated inside Snowflake.</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            download_format = st.radio("Download format", ["PDF", "Excel", "HTML"], horizontal=True, index=0)
+            st.markdown('<div class="control-help">Choose the file type for this report.</div>', unsafe_allow_html=True)
 
     generated_at = report_timestamp()
+    download_data = None
+    download_extension = ""
+    download_mime = ""
     if download_format == "PDF":
         download_data = build_pdf_report(
             report_type,
@@ -3628,7 +3709,7 @@ def reports_page():
         )
         download_extension = "xlsx"
         download_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    else:
+    elif download_format == "HTML":
         download_data = build_finance_packet_html(
             report_type,
             period,
@@ -3677,14 +3758,22 @@ def reports_page():
 
     with action_cols[2]:
         st.markdown('<div class="download-spacer"></div>', unsafe_allow_html=True)
-        st.download_button(
-            "Download report",
-            download_data,
-            file_name=report_filename(report_type, generated_at, download_extension),
-            mime=download_mime,
-            use_container_width=True,
-            type="primary",
-        )
+        if native_export_mode:
+            st.button(
+                "Download report",
+                disabled=True,
+                use_container_width=True,
+                type="primary",
+            )
+        else:
+            st.download_button(
+                "Download report",
+                download_data,
+                file_name=report_filename(report_type, generated_at, download_extension),
+                mime=download_mime,
+                use_container_width=True,
+                type="primary",
+            )
     with action_cols[3]:
         st.markdown('<div class="download-spacer"></div>', unsafe_allow_html=True)
         st.caption(
@@ -4366,11 +4455,21 @@ def settings_page():
                     st.success("Core recommendation, scan, event, and savings objects are ready in Snowflake.")
                 except Exception as exc:
                     st.error(f"Schema initialization failed: {exc}")
+        if st.button("Sync native control plane", disabled=not has_permission("admin")):
+            ok, message = sync_native_control_plane(current_app_settings(st.session_state), snowflake_config)
+            if ok:
+                st.success(message)
+            else:
+                st.error(message)
     with right_conn:
         st.caption(
             "Live mode can pull warehouse, query, task, and storage account-usage metadata. The persistence schema button creates the "
             "Snowflake tables and workflow procedures that will back recommendation status changes, audit events, "
             "scan history, and savings snapshots."
+        )
+        st.caption(
+            "Phase 1 native sync pushes the saved Enterprise control plane into Snowflake as a config snapshot, "
+            "user directory, and enterprise config audit trail so the app has a native system of record to build on."
         )
         st.code(
             "GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO APPLICATION <installed_app_name>;",
@@ -4386,6 +4485,7 @@ def settings_page():
         [
             ("Core tables", "sql/app/001_core_tables.sql", "Recommendation, event, scan, finding, and savings tables"),
             ("Workflow procedures", "sql/app/002_recommendation_workflow_procedures.sql", "Status updates and SQL-copy audit events"),
+            ("Enterprise control plane", "sql/app/003_enterprise_control_plane.sql", "Config snapshot, user directory, enterprise audit log, and readiness view"),
             ("Local adapter", "costops/data/recommendation_store.py", "Session-backed workflow store for POC actions"),
             ("Snowflake adapter", "costops/data/snowflake_repository.py", "Schema initialization and procedure calls"),
             ("Analysis runner", "costops/services/analysis_runner.py", "Turns warehouse, workload, task, and storage metadata into recommendations"),
@@ -4400,8 +4500,9 @@ def settings_page():
         [
             ("Application package", "Drafted", "Validate native_app manifest and setup script in a Snowflake test package"),
             ("Privilege model", "Not started", "Document access to account usage metadata"),
-            ("Persistence schema", "POC ready", "Core tables and workflow procedures created under sql/app"),
+            ("Persistence schema", "Phase 1 ready", "Core tables, workflow procedures, and enterprise control-plane tables created under sql/app"),
             ("Analysis runner", "POC ready", "Rules generate recommendations from warehouse, workload, task, and storage metadata"),
+            ("Native control-plane sync", "Phase 1 ready", "Sync saved enterprise config, user directory, and enterprise audit trail into Snowflake"),
             ("Scan procedure", "Next", "Move Python runner logic into Snowflake-executable stored procedure/task path"),
             ("Scheduled task", "Not started", "Nightly scan option"),
             ("Marketplace listing", "Not started", "Screenshots, support, security notes"),
@@ -5158,6 +5259,21 @@ def enterprise_controls_page():
         "Demo note: these controls model the Enterprise workflow. Full SSO, persistence provisioning, "
         "and marketplace entitlement sync still need production integrations."
     )
+
+    sync_cols = st.columns([1.1, 2.3], gap="small", vertical_alignment="bottom")
+    with sync_cols[0]:
+        sync_now = st.button("Sync native control plane", type="primary", disabled=not has_permission("admin"), width="stretch")
+    with sync_cols[1]:
+        st.caption(
+            "Phase 1 native sync writes the current enterprise settings, user directory, and enterprise config audit log "
+            "into Snowflake so the control plane starts living natively with the customer account."
+        )
+    if sync_now:
+        ok, message = sync_native_control_plane(settings, snowflake_config)
+        if ok:
+            st.success(message)
+        else:
+            st.error(message)
 
     rollup = enterprise_rollup_metrics(settings)
     blockers = enterprise_blockers(settings)
@@ -6313,40 +6429,83 @@ def _render_enterprise_feature_grid(locked):
     )
 
 
-navigation_pages = {
+NAVIGATION_SPECS = {
     "Command Center": [
-        st.Page(overview, title="Overview", icon=":material/space_dashboard:", default=True),
-        st.Page(recommendations_page, title="Recommendations", icon=":material/rule_folder:"),
-        st.Page(my_work_page, title="My Work", icon=":material/badge:"),
-        st.Page(scan_schedule_page, title="Scan & Schedule", icon=":material/schedule_send:"),
+        {"fn": overview, "title": "Overview", "icon": ":material/space_dashboard:", "default": True},
+        {"fn": recommendations_page, "title": "Recommendations", "icon": ":material/rule_folder:"},
+        {"fn": my_work_page, "title": "My Work", "icon": ":material/badge:"},
+        {"fn": scan_schedule_page, "title": "Scan & Schedule", "icon": ":material/schedule_send:"},
     ],
     "Analysis": [
-        st.Page(warehouses_page, title="Warehouses", icon=":material/database:"),
-        st.Page(workloads_page, title="Workloads", icon=":material/monitoring:"),
-        st.Page(storage_page, title="Storage", icon=":material/storage:"),
-        st.Page(tasks_page, title="Tasks", icon=":material/task_alt:"),
+        {"fn": warehouses_page, "title": "Warehouses", "icon": ":material/database:"},
+        {"fn": workloads_page, "title": "Workloads", "icon": ":material/monitoring:"},
+        {"fn": storage_page, "title": "Storage", "icon": ":material/storage:"},
+        {"fn": tasks_page, "title": "Tasks", "icon": ":material/task_alt:"},
     ],
     "Value": [
-        st.Page(savings_realization_page, title="Savings Realization", icon=":material/trending_up:"),
-        st.Page(reports_page, title="Reports", icon=":material/assessment:"),
+        {"fn": savings_realization_page, "title": "Savings Realization", "icon": ":material/trending_up:"},
+        {"fn": reports_page, "title": "Reports", "icon": ":material/assessment:"},
     ],
     "Admin": [
-        st.Page(upgrade_plan_page, title="Upgrade Plan", icon=":material/workspace_premium:", url_path="upgrade_plan"),
-        st.Page(enterprise_controls_page, title="Enterprise Controls", icon=":material/admin_panel_settings:", url_path="enterprise_controls"),
-        st.Page(rbac_mapping_page, title="RBAC Mapping", icon=":material/admin_panel_settings:", url_path="rbac_mapping"),
-        st.Page(environments_page, title="Environments", icon=":material/account_tree:", url_path="enterprise_environments"),
-        st.Page(persistence_page, title="Persistence", icon=":material/database:", url_path="enterprise_persistence"),
-        st.Page(sso_identity_page, title="SSO & Identity", icon=":material/badge:", url_path="enterprise_identity"),
-        st.Page(sla_support_page, title="SLA & Support", icon=":material/support_agent:", url_path="enterprise_support"),
-        st.Page(users_roles_page, title="Users and Roles", icon=":material/group:"),
-        st.Page(settings_page, title="Settings", icon=":material/settings:"),
+        {"fn": upgrade_plan_page, "title": "Upgrade Plan", "icon": ":material/workspace_premium:", "url_path": "upgrade_plan"},
+        {"fn": enterprise_controls_page, "title": "Enterprise Controls", "icon": ":material/admin_panel_settings:", "url_path": "enterprise_controls"},
+        {"fn": rbac_mapping_page, "title": "RBAC Mapping", "icon": ":material/admin_panel_settings:", "url_path": "rbac_mapping"},
+        {"fn": environments_page, "title": "Environments", "icon": ":material/account_tree:", "url_path": "enterprise_environments"},
+        {"fn": persistence_page, "title": "Persistence", "icon": ":material/database:", "url_path": "enterprise_persistence"},
+        {"fn": sso_identity_page, "title": "SSO & Identity", "icon": ":material/badge:", "url_path": "enterprise_identity"},
+        {"fn": sla_support_page, "title": "SLA & Support", "icon": ":material/support_agent:", "url_path": "enterprise_support"},
+        {"fn": users_roles_page, "title": "Users and Roles", "icon": ":material/group:"},
+        {"fn": settings_page, "title": "Settings", "icon": ":material/settings:"},
     ],
 }
 
-current_page = st.navigation(navigation_pages, position="sidebar", expanded=True)
+
+def create_navigation_pages():
+    return {
+        section: [
+            st.Page(
+                page["fn"],
+                title=page["title"],
+                icon=page.get("icon"),
+                default=page.get("default", False),
+                url_path=page.get("url_path"),
+            )
+            for page in pages
+        ]
+        for section, pages in NAVIGATION_SPECS.items()
+    }
+
+
+def select_native_page():
+    page_options = []
+    for section, pages in NAVIGATION_SPECS.items():
+        for page in pages:
+            page_options.append((f"{section} / {page['title']}", page))
+    labels = [label for label, _ in page_options]
+    default_index = next(
+        (index for index, (_, page) in enumerate(page_options) if page.get("default")),
+        0,
+    )
+    selected_label = st.radio(
+        "Navigation",
+        labels,
+        index=default_index,
+        label_visibility="collapsed",
+    )
+    st.caption("Native compatibility navigation")
+    return dict(page_options)[selected_label]
+
+
+if NATIVE_APP_MODE:
+    current_page = None
+else:
+    current_page = st.navigation(create_navigation_pages(), position="sidebar", expanded=True)
 
 with st.sidebar:
+    native_page = select_native_page() if NATIVE_APP_MODE else None
     st.divider()
+    if NATIVE_APP_MODE:
+        st.caption("Snowflake Native compatibility mode")
     render_sidebar_plan_status(
         recommendation_count=int(recommendations["recommendation_id"].nunique()),
         warehouse_count=warehouse_observed_count(warehouses),
@@ -6356,4 +6515,7 @@ with st.sidebar:
     state = "complete" if data_source_status in {"Sample data loaded", "Snowflake warehouse metering loaded"} else "error"
     st.status(data_source_status, state=state, expanded=False)
 
-current_page.run()
+if NATIVE_APP_MODE:
+    native_page["fn"]()
+else:
+    current_page.run()

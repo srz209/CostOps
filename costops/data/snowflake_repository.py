@@ -55,6 +55,16 @@ def persist_analysis_result(config, scan_result):
         conn.commit()
 
 
+def persist_enterprise_control_plane(config, settings, enterprise_audit_events):
+    user_directory = settings.get("user_directory", [])
+    with connect(config) as conn:
+        with conn.cursor() as cursor:
+            upsert_enterprise_config_snapshot(cursor, settings)
+            replace_enterprise_user_directory(cursor, user_directory)
+            sync_enterprise_config_audit_events(cursor, enterprise_audit_events)
+        conn.commit()
+
+
 def upsert_scan_run(cursor, scan_run):
     cursor.execute(
         """
@@ -314,6 +324,167 @@ def insert_finding(cursor, finding):
             json.dumps(finding["finding_payload"]),
         ),
     )
+
+
+def upsert_enterprise_config_snapshot(cursor, settings):
+    cursor.execute(
+        """
+        MERGE INTO COSTOPS_APP.ENTERPRISE_CONFIG_SNAPSHOT target
+        USING (
+            SELECT
+                %s AS config_scope,
+                %s AS production_account,
+                %s AS production_region,
+                %s AS app_instance,
+                %s AS billing_scope,
+                %s AS rbac_status,
+                %s AS environment_status,
+                %s AS persistence_status,
+                %s AS sso_status,
+                %s AS sla_status,
+                PARSE_JSON(%s) AS config_payload
+        ) source
+        ON target.config_scope = source.config_scope
+        WHEN MATCHED THEN UPDATE SET
+            production_account = source.production_account,
+            production_region = source.production_region,
+            app_instance = source.app_instance,
+            billing_scope = source.billing_scope,
+            rbac_status = source.rbac_status,
+            environment_status = source.environment_status,
+            persistence_status = source.persistence_status,
+            sso_status = source.sso_status,
+            sla_status = source.sla_status,
+            config_payload = source.config_payload,
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN INSERT (
+            config_scope,
+            production_account,
+            production_region,
+            app_instance,
+            billing_scope,
+            rbac_status,
+            environment_status,
+            persistence_status,
+            sso_status,
+            sla_status,
+            config_payload
+        )
+        VALUES (
+            source.config_scope,
+            source.production_account,
+            source.production_region,
+            source.app_instance,
+            source.billing_scope,
+            source.rbac_status,
+            source.environment_status,
+            source.persistence_status,
+            source.sso_status,
+            source.sla_status,
+            source.config_payload
+        )
+        """,
+        (
+            "enterprise",
+            settings.get("enterprise_prod_account", ""),
+            settings.get("enterprise_prod_region", ""),
+            settings.get("enterprise_app_instance", ""),
+            settings.get("enterprise_billing_scope", ""),
+            settings.get("enterprise_rbac_status", "Not configured"),
+            settings.get("enterprise_linked_environments_status", "Not configured"),
+            settings.get("enterprise_persistence_status", "Not configured"),
+            settings.get("enterprise_sso_status", "Not configured"),
+            settings.get("enterprise_sla_status", "Not configured"),
+            json.dumps(settings, default=str),
+        ),
+    )
+
+
+def replace_enterprise_user_directory(cursor, user_directory):
+    cursor.execute("DELETE FROM COSTOPS_APP.ENTERPRISE_USER_DIRECTORY")
+    for entry in user_directory:
+        owner_name = (entry.get("owner") or "").strip()
+        if not owner_name:
+            continue
+        cursor.execute(
+            """
+            INSERT INTO COSTOPS_APP.ENTERPRISE_USER_DIRECTORY (
+                owner_name,
+                team_name,
+                business_role,
+                email,
+                access_role
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                owner_name,
+                (entry.get("team") or "").strip(),
+                (entry.get("role") or "").strip(),
+                (entry.get("email") or "").strip(),
+                (entry.get("access_role") or "").strip(),
+            ),
+        )
+
+
+def sync_enterprise_config_audit_events(cursor, enterprise_audit_events):
+    audit_rows = enterprise_audit_events.to_dict("records") if hasattr(enterprise_audit_events, "to_dict") else []
+    for event in audit_rows:
+        cursor.execute(
+            """
+            MERGE INTO COSTOPS_APP.ENTERPRISE_CONFIG_AUDIT_LOG target
+            USING (
+                SELECT
+                    %s AS event_id,
+                    %s AS event_ts,
+                    %s AS area,
+                    %s AS change_type,
+                    %s AS actor,
+                    %s AS status,
+                    %s AS fields_changed,
+                    %s AS details
+            ) source
+            ON target.event_id = source.event_id
+            WHEN MATCHED THEN UPDATE SET
+                event_ts = source.event_ts,
+                area = source.area,
+                change_type = source.change_type,
+                actor = source.actor,
+                status = source.status,
+                fields_changed = source.fields_changed,
+                details = source.details
+            WHEN NOT MATCHED THEN INSERT (
+                event_id,
+                event_ts,
+                area,
+                change_type,
+                actor,
+                status,
+                fields_changed,
+                details
+            )
+            VALUES (
+                source.event_id,
+                source.event_ts,
+                source.area,
+                source.change_type,
+                source.actor,
+                source.status,
+                source.fields_changed,
+                source.details
+            )
+            """,
+            (
+                event.get("event_id"),
+                clean_value(event.get("event_ts")),
+                event.get("area"),
+                event.get("change_type"),
+                event.get("actor"),
+                event.get("status"),
+                event.get("fields_changed"),
+                event.get("details"),
+            ),
+        )
 
 
 def clean_value(value):
