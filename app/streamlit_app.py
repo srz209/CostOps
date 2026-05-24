@@ -21,6 +21,7 @@ except Exception:
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+LOGO_PATH = ROOT / "app" / "assets" / "grainai_leaf_logo.png"
 
 from costops.data.app_settings_store import (
     application_role_catalog,
@@ -317,6 +318,24 @@ st.markdown(
         background: #fef3c7;
         color: #92400e;
         border: 1px solid #fcd34d;
+    }
+    [data-testid="stSidebarHeader"] > div:first-child {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        min-height: 2.35rem;
+    }
+    [data-testid="stSidebarLogo"] {
+        width: 2.05rem;
+        height: 2.05rem;
+        object-fit: contain;
+    }
+    [data-testid="stSidebarHeader"] > div:first-child::after {
+        content: "GrainAI";
+        color: #2f3f1f;
+        font-size: 1.08rem;
+        font-weight: 760;
+        line-height: 1.1rem;
     }
     .costops-sidebar-status {
         border: 1px solid #334155;
@@ -869,7 +888,9 @@ def render_recommendation_filter_bar(key_prefix="global", include_severity=False
         idx += 1
         with filter_cols[idx]:
             filters["daily_savings_sort"] = st.selectbox(
-                "Daily savings", ["High to low", "Low to high"], key=f"{key_prefix}_daily_savings"
+                "Sort",
+                ["ID", "Daily savings high to low", "Daily savings low to high"],
+                key=f"{key_prefix}_daily_savings",
             )
     return filters
 
@@ -907,7 +928,14 @@ def render_kpis(recs=None):
     )
 
 
-def recommendation_table(df, key="recommendation_table", selectable=False, height=None, sort_by=None, ascending=False):
+def recommendation_table(
+    df,
+    key="recommendation_table",
+    selectable=False,
+    height=None,
+    sort_by=None,
+    ascending=False,
+):
     display = df[
         [
             "recommendation_id",
@@ -939,7 +967,7 @@ def recommendation_table(df, key="recommendation_table", selectable=False, heigh
         "hide_index": True,
         "key": key,
         "on_select": "rerun" if selectable else "ignore",
-        "selection_mode": "single-row" if selectable else "multi-row",
+        "selection_mode": "single-row-required" if selectable else "multi-row",
         "column_config": {
             "recommendation_id": "ID",
             "projected_daily_savings": st.column_config.NumberColumn("Daily Savings", format="$%d"),
@@ -960,7 +988,13 @@ def recommendation_table(df, key="recommendation_table", selectable=False, heigh
     return display.iloc[selected_position]["recommendation_id"]
 
 
-def scrolling_recommendation_table(df, page_size=20, sort_by="projected_daily_savings", ascending=False):
+def scrolling_recommendation_table(
+    df,
+    page_size=20,
+    sort_by="projected_daily_savings",
+    ascending=False,
+    selection_key="selected_recommendation_id",
+):
     sorted_df = df.sort_values([sort_by, "confidence"], ascending=[ascending, False]).reset_index(drop=True)
     total_rows = len(sorted_df)
     if total_rows == 0:
@@ -969,16 +1003,25 @@ def scrolling_recommendation_table(df, page_size=20, sort_by="projected_daily_sa
 
     visible_rows = min(total_rows, 25)
     table_height = 38 * (visible_rows + 1)
+    visible_ids = sorted_df["recommendation_id"].tolist()
+    selected_index = 0
+    if st.session_state.get(selection_key) in visible_ids:
+        selected_index = visible_ids.index(st.session_state[selection_key])
+    table_key = f"recommendation_backlog_scroll_{selection_key}_{visible_ids[selected_index]}"
     st.caption(f"{total_rows:,.0f} recommendations. Scroll the table to review more; select one row to open the detail below.")
     selected_id = recommendation_table(
         sorted_df,
-        key="recommendation_backlog_scroll",
+        key=table_key,
         selectable=True,
         height=table_height,
         sort_by=sort_by,
         ascending=ascending,
     )
-    return selected_id or sorted_df.iloc[0]["recommendation_id"]
+    if selected_id:
+        st.session_state[selection_key] = selected_id
+    elif st.session_state.get(selection_key) not in visible_ids:
+        st.session_state[selection_key] = visible_ids[0]
+    return st.session_state.get(selection_key, visible_ids[0])
 
 
 def render_filter_chips(df):
@@ -1022,7 +1065,10 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
 
     left, right = st.columns([1.2, 1])
     with left:
-        st.markdown(f'<div class="compact-title">{rec["title"]}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="compact-title">{rec["recommendation_id"]}: {rec["title"]}</div>',
+            unsafe_allow_html=True,
+        )
         st.markdown(
             f"""
             <div class="compact-chip-row">
@@ -1170,7 +1216,7 @@ def render_recommendation_detail(df, selected_recommendation_id=None):
 
 
 def overview():
-    st.title("GrainAI CostOps")
+    st.title("CostOps")
     overview_filters = render_recommendation_filter_bar("overview")
     page_recs = apply_recommendation_filters(
         recommendations,
@@ -1248,15 +1294,24 @@ def recommendations_page():
     )
     if rec_filters["severity"] != "All":
         page_recs = page_recs[page_recs["severity"] == rec_filters["severity"]]
-    sort_ascending = rec_filters["daily_savings_sort"] == "Low to high"
+    sort_option = rec_filters["daily_savings_sort"]
+    sort_by = "recommendation_id"
+    sort_ascending = True
+    if sort_option == "Daily savings high to low":
+        sort_by = "projected_daily_savings"
+        sort_ascending = False
+    elif sort_option == "Daily savings low to high":
+        sort_by = "projected_daily_savings"
+        sort_ascending = True
     render_kpis(page_recs)
 
     render_filter_chips(page_recs)
     selected_recommendation_id = scrolling_recommendation_table(
         page_recs,
         page_size=20,
-        sort_by="projected_daily_savings",
+        sort_by=sort_by,
         ascending=sort_ascending,
+        selection_key="recommendations_selected_recommendation_id",
     )
     render_recommendation_detail(page_recs, selected_recommendation_id)
 
@@ -6502,6 +6557,8 @@ def select_native_page():
     return dict(page_options)[selected_label]
 
 
+if LOGO_PATH.exists() and hasattr(st, "logo"):
+    st.logo(str(LOGO_PATH), size="large")
 current_page = st.navigation(create_navigation_pages(), position="sidebar", expanded=True)
 
 with st.sidebar:
