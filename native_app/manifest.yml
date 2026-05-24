@@ -1,10 +1,10 @@
 manifest_version: 2
 
 version:
-  name: v0_1
-  patch: 1
-  label: "Cost optimization POC"
-  comment: "Draft Snowflake Native App package skeleton for local validation."
+  name: v0_12
+  patch: 0
+  label: "GrainAI CostOps"
+  comment: "Snowflake Native App package for GrainAI CostOps validation."
 
 artifacts:
   setup_script: setup_script.sql
@@ -14,4 +14,4 @@ artifacts:
 configuration:
   log_level: INFO
   trace_level: OFF
-  metric_level: BASIC
+  metric_level: NONE

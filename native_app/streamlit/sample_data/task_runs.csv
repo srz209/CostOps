@@ -1,0 +1,7 @@
+task_name,database_name,schema_name,warehouse,schedule,executions_7d,failures_7d,avg_runtime_seconds,cloud_services_credits,estimated_compute_cost,last_state,recommendation
+TASK_REFRESH_EXEC_SUMMARY,ANALYTICS,MARTS,BI_WH,Every 15 minutes,672,0,8,3.2,1320,SUCCEEDED,Reduce to daily after upstream refresh
+TASK_DBT_NIGHTLY_BUILD,ANALYTICS,DBT,DBT_WH,Daily 4 AM,7,1,2840,1.1,1880,SUCCEEDED,Review full refresh models
+TASK_LOAD_EVENTS_RAW,RAW,EVENTS,ETL_MULTI_WH,Every 10 minutes,1008,4,42,5.8,990,SUCCEEDED,Batch tiny files and reduce churn
+TASK_CLEANUP_STAGE_FILES,RAW,EVENTS,ETL_MULTI_WH,Daily 7 AM,7,0,96,0.2,85,SUCCEEDED,Keep
+TASK_REFRESH_DEV_CLONE,DEV_RAW,ADMIN,ETL_MULTI_WH,Daily 6 AM,7,0,210,0.4,140,SUCCEEDED,Validate clone lifecycle
+TASK_CAMPAIGN_TEMP_BUILD,ANALYTICS,STAGING,DBT_WH,Hourly,168,13,620,2.7,760,FAILED,Disable or assign owner
