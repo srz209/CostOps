@@ -1,0 +1,9 @@
+workload,cost_usd,warehouse,query_count,avg_runtime_seconds,gb_scanned,spill_gb,category
+dbt model: fct_customer_activity,9120,DBT_WH,31,1180,8420,12.4,Transformation
+dashboard: executive_summary,3860,BI_WH,612,14,980,0.0,BI
+task: refresh_exec_summary,2440,BI_WH,672,8,410,0.0,Task
+ad hoc: raw contact exploration,2180,ADHOC_WH,44,220,3260,4.8,Ad hoc
+dbt model: dim_account_history,1840,DBT_WH,31,420,2110,1.2,Transformation
+copy: events ingest,1320,ETL_MULTI_WH,88,96,620,0.0,Ingestion
+procedure: nightly_rollup,1190,ETL_MULTI_WH,31,510,1840,2.1,Procedure
+dashboard: sales_pipeline,1080,BI_WH,346,11,340,0.0,BI

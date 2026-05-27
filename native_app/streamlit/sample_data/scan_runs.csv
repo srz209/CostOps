@@ -1,0 +1,7 @@
+scan_id,scan_type,scan_scope,started_at,completed_at,status,frequency,lookback_days,initiated_by,credits_estimated,recommendations_found,recommendations_new,recommendations_updated,error_message
+SCAN-20260518-0800,SCHEDULED,FULL,2026-05-18 08:00:00,2026-05-18 08:07:42,SUCCEEDED,Daily,30,system,0.42,8,1,3,
+SCAN-20260517-0800,SCHEDULED,FULL,2026-05-17 08:00:00,2026-05-17 08:06:58,SUCCEEDED,Daily,30,system,0.39,7,0,2,
+SCAN-20260516-0800,SCHEDULED,FULL,2026-05-16 08:00:00,2026-05-16 08:08:11,SUCCEEDED,Daily,30,system,0.44,7,1,1,
+SCAN-20260515-1420,AD_HOC,FULL,2026-05-15 14:20:00,2026-05-15 14:28:49,SUCCEEDED,Manual,90,Jordan Lee,0.73,6,2,2,
+SCAN-20260514-0800,SCHEDULED,FULL,2026-05-14 08:00:00,2026-05-14 08:05:31,SUCCEEDED,Daily,30,system,0.36,5,0,1,
+SCAN-20260513-0800,SCHEDULED,FULL,2026-05-13 08:00:00,2026-05-13 08:01:04,FAILED,Daily,30,system,0.08,0,0,0,Timed out while reading task history metadata

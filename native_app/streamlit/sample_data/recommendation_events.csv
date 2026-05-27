@@ -1,0 +1,26 @@
+event_id,recommendation_id,event_ts,event_type,actor,details
+EVT-001,REC-008,2026-04-05 08:10:00,DETECTED,system,Detected multi-cluster minimum setting above expected baseline.
+EVT-002,REC-008,2026-04-18 09:25:00,SELECTED,Jordan Lee,Selected for warehouse optimization sprint.
+EVT-003,REC-008,2026-04-18 09:27:00,SQL_COPIED,Jordan Lee,Copied generated ALTER WAREHOUSE statement.
+EVT-004,REC-008,2026-04-22 14:05:00,IMPLEMENTED,Jordan Lee,Marked implemented after warehouse setting change.
+EVT-005,REC-008,2026-05-01 08:30:00,SAVINGS_CALCULATED,system,Post-change savings estimate calculated from lower metering baseline.
+EVT-006,REC-003,2026-04-15 08:15:00,DETECTED,system,Detected recurring high-cost full refresh pattern.
+EVT-007,REC-003,2026-05-03 10:20:00,ACCEPTED,Riley Chen,Accepted after reviewing dbt model evidence.
+EVT-008,REC-003,2026-05-03 10:22:00,SQL_COPIED,Riley Chen,Copied implementation guidance.
+EVT-009,REC-003,2026-05-06 16:40:00,IMPLEMENTED,Riley Chen,Marked incremental model change implemented.
+EVT-010,REC-003,2026-05-13 08:00:00,SAVINGS_CALCULATED,system,Seven-day post-change savings calculated.
+EVT-011,REC-002,2026-05-01 07:55:00,DETECTED,system,Detected right-sizing candidate.
+EVT-012,REC-002,2026-05-12 11:14:00,SELECTED,Avery Patel,Selected for validation.
+EVT-013,REC-002,2026-05-12 11:15:00,SQL_COPIED,Avery Patel,Copied downsize SQL for review.
+EVT-014,REC-007,2026-04-10 07:45:00,DETECTED,system,Detected third-party BI workload against raw object.
+EVT-015,REC-007,2026-05-05 13:30:00,SELECTED,Morgan Brooks,Selected for ownership review.
+EVT-016,REC-001,2026-04-22 08:05:00,DETECTED,system,Detected auto-suspend threshold above recommended baseline.
+EVT-017,REC-005,2026-04-29 08:05:00,DETECTED,system,Detected high-frequency task schedule.
+EVT-018,REC-005,2026-05-10 15:15:00,DEFERRED,Morgan Brooks,Deferred until dashboard freshness requirements are confirmed.
+EVT-019,REC-004,2026-05-07 08:05:00,DETECTED,system,Detected high retention on staging object.
+EVT-020,REC-006,2026-05-12 08:05:00,DETECTED,system,Detected unattributed query spend.
+EVT-021,,2026-05-18 08:00:00,SCAN_STARTED,system,Full scheduled scan started with 30-day lookback.
+EVT-022,,2026-05-18 08:07:42,SCAN_COMPLETED,system,Full scheduled scan completed; 8 recommendations found.
+EVT-023,,2026-05-15 14:20:00,SCAN_STARTED,Jordan Lee,Ad hoc full scan started with 90-day lookback.
+EVT-024,,2026-05-15 14:28:49,SCAN_COMPLETED,system,Ad hoc full scan completed; 6 recommendations found.
+EVT-025,,2026-05-13 08:01:04,SCAN_FAILED,system,Scheduled scan failed while reading task history metadata.
