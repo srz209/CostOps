@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CostOps Quick Start Guide</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #667085;
+      --border: #e5e7eb;
+      --accent: #ff4d4f;
+      --accent-soft: #fff1f1;
+      --link: #155eef;
+      --shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+      --sidebar-width: 320px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    a {
+      color: var(--link);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: var(--sidebar-width) 1fr;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      height: 100vh;
+      overflow-y: auto;
+      background: #fbfcfe;
+      border-right: 1px solid var(--border);
+      padding: 32px 24px 40px;
+    }
+
+    .brand {
+      margin-bottom: 24px;
+    }
+
+    .brand h1 {
+      font-size: 1.35rem;
+      line-height: 1.2;
+      margin: 0 0 8px;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .nav-section {
+      margin-top: 28px;
+    }
+
+    .nav-section h2 {
+      margin: 0 0 10px;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .nav-section ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .nav-section li {
+      margin: 0;
+    }
+
+    .nav-section a {
+      display: block;
+      padding: 8px 10px;
+      margin: 2px 0;
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 0.96rem;
+    }
+
+    .nav-section a:hover {
+      background: #eef2ff;
+      text-decoration: none;
+    }
+
+    .content {
+      padding: 40px 48px 80px;
+    }
+
+    .hero,
+    .section-card,
+    .page-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 36px 40px;
+      margin-bottom: 28px;
+    }
+
+    .hero .eyebrow {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: #b42318;
+      font-weight: 600;
+      font-size: 0.82rem;
+      margin-bottom: 18px;
+    }
+
+    .hero h1 {
+      font-size: clamp(2rem, 3vw, 3rem);
+      line-height: 1.1;
+      margin: 0 0 14px;
+    }
+
+    .hero p {
+      margin: 0 0 14px;
+      color: var(--muted);
+      max-width: 900px;
+      font-size: 1.03rem;
+    }
+
+    .hero ul {
+      margin: 18px 0 0;
+      padding-left: 20px;
+    }
+
+    .category-block {
+      margin-top: 32px;
+    }
+
+    .section-card {
+      padding: 28px 30px;
+      margin-bottom: 22px;
+    }
+
+    .section-card h2 {
+      margin: 0 0 8px;
+      font-size: 1.9rem;
+      line-height: 1.2;
+    }
+
+    .section-card p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .page-card {
+      padding: 28px 30px;
+      margin-bottom: 22px;
+      scroll-margin-top: 24px;
+    }
+
+    .page-card h3 {
+      margin: 0 0 10px;
+      font-size: 1.55rem;
+      line-height: 1.2;
+    }
+
+    .page-card > p {
+      margin: 0 0 16px;
+      color: var(--muted);
+    }
+
+    .subsection {
+      margin-top: 20px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+    }
+
+    .subsection h4 {
+      margin: 0 0 10px;
+      font-size: 1rem;
+      line-height: 1.3;
+    }
+
+    .subsection p {
+      margin: 0 0 10px;
+    }
+
+    ul, ol {
+      margin: 10px 0 0;
+      padding-left: 22px;
+    }
+
+    li + li {
+      margin-top: 6px;
+    }
+
+    .footer-note {
+      margin-top: 34px;
+      background: #fffaf0;
+      border: 1px solid #f5e3b3;
+      border-radius: 16px;
+      padding: 22px 24px;
+    }
+
+    .footer-note h2 {
+      margin: 0 0 10px;
+      font-size: 1.2rem;
+    }
+
+    .footer-note p,
+    .footer-note li {
+      color: #5f4b32;
+    }
+
+    @media (max-width: 1100px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .content {
+        padding: 28px 20px 60px;
+      }
+
+      .hero,
+      .section-card,
+      .page-card {
+        border-radius: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>CostOps Quick Start</h1>
+        <p>A review draft for the current application pages, organized by product area.</p>
+      </div>
+
+      <nav>
+        <div class="nav-section">
+          <h2>Overview</h2>
+          <ul>
+            <li><a href="#intro">Introduction</a></li>
+            <li><a href="#how-to-use">How to use this guide</a></li>
+          </ul>
+        </div>
+
+        <div class="nav-section">
+          <h2>Command Center</h2>
+          <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#recommendations">Recommendations</a></li>
+            <li><a href="#my-work">My Work</a></li>
+            <li><a href="#scan-schedule">Scan &amp; Schedule</a></li>
+          </ul>
+        </div>
+
+        <div class="nav-section">
+          <h2>Analysis</h2>
+          <ul>
+            <li><a href="#warehouses">Warehouses</a></li>
+            <li><a href="#workloads">Workloads</a></li>
+            <li><a href="#storage">Storage</a></li>
+            <li><a href="#tasks">Tasks</a></li>
+          </ul>
+        </div>
+
+        <div class="nav-section">
+          <h2>Value</h2>
+          <ul>
+            <li><a href="#savings-realization">Savings Realization</a></li>
+            <li><a href="#reports">Reports</a></li>
+          </ul>
+        </div>
+
+        <div class="nav-section">
+          <h2>Admin</h2>
+          <ul>
+            <li><a href="#enterprise-controls">Enterprise Controls</a></li>
+            <li><a href="#rbac-mapping">RBAC Mapping</a></li>
+            <li><a href="#environments">Environments</a></li>
+            <li><a href="#persistence">Persistence</a></li>
+            <li><a href="#sso-identity">SSO &amp; Identity</a></li>
+            <li><a href="#sla-support">SLA &amp; Support</a></li>
+            <li><a href="#users-roles">Users and Roles</a></li>
+            <li><a href="#settings">Settings</a></li>
+          </ul>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="content">
+      <section class="hero" id="intro">
+        <div class="eyebrow">Draft Documentation</div>
+        <h1>CostOps Quick Start Guide</h1>
+        <p>This document is a consolidated quick start guide for the current CostOps application. It is intended for internal review before screenshots, formatting polish, website adaptation, or video scripting are added.</p>
+        <p>The goal of this draft is to explain what each major page does, how it is typically used, and why it matters.</p>
+        <ul>
+          <li>Audience: enterprise administrators, platform teams, analytics teams, and business stakeholders</li>
+          <li>Structure: Command Center, Analysis, Value, and Admin</li>
+          <li>Current state: text-first draft ready for review before visual callouts are added</li>
+        </ul>
+      </section>
+
+      <section class="section-card" id="how-to-use">
+        <h2>How to use this guide</h2>
+        <p>Use the left navigation to jump between product areas and pages. Each page section explains what the page is for, what major sections it contains, how a user would typically work with it, and why it matters in the overall CostOps workflow.</p>
+      </section>
+
+      <div class="category-block">
+        <section class="section-card">
+          <h2>Command Center</h2>
+          <p>The Command Center is the main operational area of CostOps. It combines the summary view, recommendation workflow, personal or team execution queues, and scan orchestration.</p>
+        </section>
+
+        <section class="page-card" id="overview">
+          <h3>Overview</h3>
+          <p>The <strong>Overview</strong> page is the main landing page for CostOps. It gives users a high-level summary of cost exposure, savings opportunity, recommendation priority, and enterprise rollout status.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Review current estimated Snowflake spend</li>
+              <li>See open monthly savings opportunity</li>
+              <li>Track realized monthly savings</li>
+              <li>Identify the number of critical findings</li>
+              <li>Understand how recommendations are distributed by category, severity, and status</li>
+              <li>Spot the highest-value recommendations to review first</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Filter bar</strong>: lets users filter by status, category, team, owner, and minimum confidence. These filters update the dashboard below.</p>
+            <p><strong>KPI summary cards</strong>: show estimated monthly spend, monthly savings opportunity, realized monthly savings, and critical findings.</p>
+            <p><strong>Enterprise Rollout</strong>: for Enterprise accounts, this summarizes readiness, active areas, action needed, and the top blocker.</p>
+            <p><strong>Savings Opportunity charts</strong>: provide category, severity, and status breakdowns.</p>
+            <p><strong>Highest Value Recommendations</strong>: highlights recommendations with the largest financial impact, including ownership, confidence, due dates, and missed savings context.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Review the KPI cards</li>
+              <li>Apply filters if needed</li>
+              <li>Scan the charts for major problem areas</li>
+              <li>Review the Highest Value Recommendations table</li>
+              <li>Move into the Recommendations page for detailed action</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Overview page is designed to answer one question quickly: <strong>Where should we focus first to reduce Snowflake cost and improve operational efficiency?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="recommendations">
+          <h3>Recommendations</h3>
+          <p>The <strong>Recommendations</strong> page is the main workflow page in CostOps. It is where users review savings opportunities, assign ownership, move recommendations through implementation stages, and track audit history.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Review the prioritized backlog of optimization opportunities</li>
+              <li>Filter recommendations by severity, status, category, team, owner, and confidence</li>
+              <li>Select a recommendation and review its detail</li>
+              <li>Assign ownership and due dates</li>
+              <li>Log SQL copy activity</li>
+              <li>Move a recommendation through its lifecycle from discovery to realization</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Filter bar</strong>: severity, status, category, team, owner, minimum confidence, and sort controls.</p>
+            <p><strong>KPI summary cards</strong>: estimated monthly spend, monthly savings opportunity, realized monthly savings, and critical findings.</p>
+            <p><strong>Recommendation summary chips</strong>: show total findings, savings opportunity, missed savings, average age, overdue items, and realized savings.</p>
+            <p><strong>Recommendation backlog table</strong>: the main recommendation list with columns for savings, due dates, confidence, ownership, risk, effort, and status.</p>
+            <p><strong>Selected recommendation detail</strong>: the lower detail pane updates when a row is selected.</p>
+            <p><strong>Generated SQL or implementation guidance</strong>: appears when available and can be logged as copied.</p>
+            <p><strong>Assignment section</strong>: owner, team, role, due date, and assignment notes.</p>
+            <p><strong>Workflow stage</strong>: proposed, selected, accepted, implemented, and realized.</p>
+            <p><strong>Lifecycle and audit panel</strong>: milestone information and recent audit activity for the selected recommendation.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Apply filters to narrow the backlog</li>
+              <li>Select a recommendation</li>
+              <li>Review the detail and expected savings</li>
+              <li>Assign ownership and due date if needed</li>
+              <li>Review or copy the SQL</li>
+              <li>Move the recommendation through the workflow</li>
+              <li>Use the audit section to confirm history and actions</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Recommendations page is the operational core of CostOps. It takes the platform from simply detecting inefficiencies to actually managing the work required to reduce cost and realize savings.</p>
+          </div>
+        </section>
+
+        <section class="page-card" id="my-work">
+          <h3>My Work</h3>
+          <p>The <strong>My Work</strong> page is the personal and team execution view in CostOps. It is designed to help users focus on the recommendations they are directly responsible for and manage those items as an active work queue.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>View recommendations by owner, team, or role</li>
+              <li>Focus only on assigned items</li>
+              <li>See overdue work and near-term due items</li>
+              <li>Understand the open savings tied to a specific person or group</li>
+              <li>Manage recommendation detail and workflow from a narrower operational view</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Work queue filters</strong>: view by owner, team, or role, along with open-only, lane, and category controls.</p>
+            <p><strong>Summary metrics</strong>: owned recommendations, overdue, due in 7 days, and open monthly savings.</p>
+            <p><strong>Work queue summary</strong>: a compact view of the selected lane and related savings.</p>
+            <p><strong>Due queue table</strong>: a quick table of urgent items with due dates and missed savings context.</p>
+            <p><strong>Owned Queue</strong>: the main working table for the selected owner, team, or role.</p>
+            <p><strong>Selected recommendation detail</strong>, <strong>Generated SQL</strong>, <strong>Assignment section</strong>, <strong>Workflow stage</strong>, and <strong>Lifecycle and audit detail</strong> mirror the operational actions from the Recommendations page, but within a narrower personal queue view.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Choose a view by owner, team, or role</li>
+              <li>Enable open-only when focusing on unresolved work</li>
+              <li>Review summary metrics and due queue</li>
+              <li>Select a recommendation from the Owned Queue</li>
+              <li>Review its detail and expected savings</li>
+              <li>Update ownership or workflow stage as work progresses</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The My Work page turns CostOps into a personal or team execution tool. Instead of asking, <strong>What should the organization work on?</strong> it answers, <strong>What am I responsible for right now, and what value is attached to it?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="scan-schedule">
+          <h3>Scan &amp; Schedule</h3>
+          <p>The <strong>Scan &amp; Schedule</strong> page is the operational control page for CostOps analysis runs. It allows users to review scan freshness, understand scan economics, configure scan timing, and run new analysis against the Snowflake environment.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>See when the last analysis run occurred</li>
+              <li>Understand whether the scan data is still fresh</li>
+              <li>Review scan credit and cost estimates</li>
+              <li>See how much savings was identified by the latest scan</li>
+              <li>Configure when scans should run</li>
+              <li>Run a new analysis manually</li>
+              <li>Review scan history over time</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Enterprise scan context banner</strong>: explains whether enterprise scan setup is fully ready and highlights blockers.</p>
+            <p><strong>Scan Control</strong>: shows last full scan, freshness, scan credits, scan cost, identified monthly savings, and savings found per $1 of scan cost.</p>
+            <p><strong>Enterprise environment context</strong>: production account, app instance, and linked validation environments for Enterprise setups.</p>
+            <p><strong>Scan scheduling controls</strong>: schedule, preferred scan time, scan scope, lookback window, next scheduled scan, and the Run analysis now action.</p>
+            <p><strong>Analysis runner explanation</strong>: describes how sample mode and Snowflake mode differ.</p>
+            <p><strong>Analysis Runner Coverage</strong>: summarizes which source areas and rule groups are included in the scan.</p>
+            <p><strong>Scan Run History</strong>: shows past runs, status, credits, findings, and any error messages.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Review the last scan and freshness status</li>
+              <li>Check estimated scan cost and identified savings</li>
+              <li>Confirm production and validation context if on Enterprise</li>
+              <li>Adjust schedule, scope, or lookback window if needed</li>
+              <li>Run a manual scan when fresh analysis is needed</li>
+              <li>Review scan history to confirm the scan completed successfully</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Scan &amp; Schedule page answers a critical operational question: <strong>When did CostOps last analyze the environment, what did that scan cost, and how much value did it uncover?</strong></p>
+          </div>
+        </section>
+      </div>
+
+      <div class="category-block">
+        <section class="section-card">
+          <h2>Analysis</h2>
+          <p>The Analysis section helps users understand where Snowflake cost, workload behavior, storage growth, and orchestration patterns are coming from.</p>
+        </section>
+
+        <section class="page-card" id="warehouses">
+          <h3>Warehouses</h3>
+          <p>The <strong>Warehouses</strong> page provides a focused view of Snowflake warehouse cost, utilization, queueing behavior, and resume activity. It helps users understand whether warehouse resources are appropriately sized and whether there are opportunities to reduce compute cost without creating performance risk.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Analyze warehouse-level spend</li>
+              <li>Compare utilization against cost</li>
+              <li>Identify oversized or underutilized warehouses</li>
+              <li>Review queueing and resume behavior</li>
+              <li>Support warehouse rightsizing decisions</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>KPI summary cards</strong>: estimated monthly spend, monthly savings opportunity, realized monthly savings, and critical findings.</p>
+            <p><strong>Warehouse cost trend</strong>: shows spend over time across warehouses.</p>
+            <p><strong>Warehouse summary scatterplot</strong>: compares average utilization and weekly cost to reveal potential oversizing.</p>
+            <p><strong>Warehouse summary table</strong>: provides warehouse-by-warehouse metrics including cost, utilization, queued seconds, and resumes.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Review overall spend and savings context</li>
+              <li>Use the trend chart to identify major cost contributors</li>
+              <li>Use utilization versus cost to spot possible oversizing</li>
+              <li>Confirm details in the warehouse summary table</li>
+              <li>Move into Recommendations if a warehouse action already exists</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Warehouses page helps answer: <strong>Are we paying for more warehouse capacity than we actually need?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="workloads">
+          <h3>Workloads</h3>
+          <p>The <strong>Workloads</strong> page analyzes how different query, transformation, dashboard, ingestion, task, ad hoc, and procedure workloads contribute to Snowflake cost. It helps users identify which workloads are driving spend and whether scan volume, runtime, or spill behavior suggest inefficiencies.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Compare the cost of different workloads</li>
+              <li>Identify expensive transformations or queries</li>
+              <li>Review scan volume and runtime characteristics</li>
+              <li>Spot workloads that may benefit from redesign or optimization</li>
+              <li>Support decisions around query efficiency and full-refresh patterns</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Workload cost ranking</strong>: ranks workloads by total cost and groups them by workload category.</p>
+            <p><strong>Runtime versus scan-volume scatterplot</strong>: compares GB scanned, average runtime, and relative workload intensity.</p>
+            <p><strong>Workload Drilldown</strong>: shows workload-level metrics such as cost, warehouse, query count, runtime, scanned volume, spill, and category.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Review the workload cost ranking to identify major spend drivers</li>
+              <li>Use the scatterplot to spot inefficient patterns</li>
+              <li>Confirm detail in the Workload Drilldown table</li>
+              <li>Compare high-cost workloads across categories</li>
+              <li>Move into Recommendations if a workload-related recommendation exists</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Workloads page helps answer: <strong>Which workloads are actually driving Snowflake cost, and are they using compute efficiently?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="storage">
+          <h3>Storage</h3>
+          <p>The <strong>Storage</strong> page is designed to help users understand how Snowflake storage is being consumed and where storage-related inefficiencies may exist. It focuses on object-level cost, retention, staleness, clone behavior, and opportunities for cleanup or review.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Review total storage cost</li>
+              <li>Identify stale objects</li>
+              <li>Find high-retention objects</li>
+              <li>Detect clone or drop candidates</li>
+              <li>Compare object-level storage cost across environments and schemas</li>
+              <li>Support cleanup and storage-governance decisions</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Storage summary metrics</strong>: monthly storage cost, stale objects, high retention objects, and clone/drop candidates.</p>
+            <p><strong>Storage footprint treemap</strong>: shows storage cost distributed across databases, schemas, and objects.</p>
+            <p><strong>Ranked object cost view</strong>: highlights the highest-cost storage objects by classification.</p>
+            <p><strong>Storage Object Review</strong>: provides detailed object-level evidence, including cost, size, last queried days, retention, access count, clone group, and classification.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Review top storage metrics</li>
+              <li>Use the treemap to understand where storage is concentrated</li>
+              <li>Review the ranked object chart to identify high-cost objects</li>
+              <li>Inspect the Storage Object Review table for detailed evidence</li>
+              <li>Move into Recommendations if storage-related actions have been generated</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Storage page helps answer: <strong>What data are we still paying to keep, and do we still need it in its current form?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="tasks">
+          <h3>Tasks</h3>
+          <p>The <strong>Tasks</strong> page is designed to analyze Snowflake task activity, runtime behavior, failures, and compute cost. It helps users identify tasks that run too frequently, fail too often, or consume more compute than expected.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Review task execution volume</li>
+              <li>Identify tasks with high failure rates</li>
+              <li>Compare estimated compute cost across tasks</li>
+              <li>Detect high-frequency task activity</li>
+              <li>Evaluate whether tasks are running more often than needed</li>
+              <li>Support orchestration and scheduling optimization</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Task summary metrics</strong>: 7-day task executions, 7-day failures, estimated compute cost, and high-frequency tasks.</p>
+            <p><strong>Task cost ranking</strong>: ranks tasks by estimated compute cost.</p>
+            <p><strong>Runtime versus execution scatterplot</strong>: compares run frequency, runtime, and last state behavior.</p>
+            <p><strong>Task Review Queue</strong>: gives task-level details, including schedule, failures, credits, cost, last state, and recommendation.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Review the top summary metrics</li>
+              <li>Look at the task cost ranking to identify major contributors</li>
+              <li>Use the runtime versus execution chart to spot noisy or unstable tasks</li>
+              <li>Review the Task Review Queue for exact task-level details</li>
+              <li>Use the recommendation column to guide next actions</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Tasks page helps answer: <strong>Are our recurring tasks running at the right cadence and with acceptable reliability, or are they creating unnecessary cost and churn?</strong></p>
+          </div>
+        </section>
+      </div>
+
+      <div class="category-block">
+        <section class="section-card">
+          <h2>Value</h2>
+          <p>The Value section connects recommendations to measurable business outcomes and reporting artifacts.</p>
+        </section>
+
+        <section class="page-card" id="savings-realization">
+          <h3>Savings Realization</h3>
+          <p>The <strong>Savings Realization</strong> page is designed to show how much projected value has actually been captured over time. It connects recommendations to real business outcomes by comparing projected savings, realized savings, missed savings, and open recommendations.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Compare projected opportunity with realized savings</li>
+              <li>Track missed savings from unresolved recommendations</li>
+              <li>Review the number of still-open recommendations</li>
+              <li>Understand savings performance by category, status, team, and ownership</li>
+              <li>Measure whether CostOps recommendations are producing business value</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Filter bar</strong>: status, category, team, owner, and minimum confidence.</p>
+            <p><strong>Period selector</strong>: MTD, QTD, YTD, and Since inception.</p>
+            <p><strong>Savings summary metrics</strong>: realized savings, projected opportunity, missed savings, and open recommendations.</p>
+            <p><strong>Savings by category chart</strong>: compares projected, realized, and missed by category.</p>
+            <p><strong>Ownership / team savings view</strong>: compares projected monthly savings against missed savings across teams.</p>
+            <p><strong>Savings Lifecycle by Status</strong>: status-level savings breakdown.</p>
+            <p><strong>Aging and Ownership Queue</strong>: unresolved recommendation view with ownership and aging context.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Choose the appropriate reporting period</li>
+              <li>Apply filters as needed</li>
+              <li>Review the top metrics to understand the current savings posture</li>
+              <li>Use category and ownership views to identify where value is or is not being captured</li>
+              <li>Review the status table to understand where recommendations are in the lifecycle</li>
+              <li>Use the aging queue to follow up on open items generating missed savings</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Savings Realization page answers: <strong>How much value have we actually captured, and how much are we still leaving unrealized?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="reports">
+          <h3>Reports</h3>
+          <p>The <strong>Reports</strong> page is the primary reporting and export surface in CostOps. It is designed to translate recommendations, savings, ownership, scan activity, and enterprise readiness into structured reporting that can be used by finance, leadership, platform teams, and administrators.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Generate filtered reports across recommendations, savings, lifecycle, ownership, and enterprise readiness</li>
+              <li>Compare projected, realized, and missed savings</li>
+              <li>Prepare finance-friendly reporting packets</li>
+              <li>Review enterprise rollout context alongside cost outcomes</li>
+              <li>Export reporting views for sharing or review</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Enterprise reporting context banner</strong>: explains enterprise rollout context and blockers that affect reporting readiness.</p>
+            <p><strong>Report configuration controls</strong>: report type, time range, category, team, owner, status, severity, report detail, and download format.</p>
+            <p><strong>Supported report types</strong>: comprehensive finance packet, executive ROI summary, savings by team, savings by category, recommendation lifecycle, unresolved opportunity, owner accountability, users and roles, scan ROI history, enterprise readiness, enterprise config audit trail, recommendation backlog, recommendation audit trail, and custom report.</p>
+            <p><strong>KPI summary cards</strong>: realized savings, projected savings, annualized opportunity, unresolved missed savings, scan ROI, and net monthly benefit.</p>
+            <p><strong>Executive Summary</strong>: plain-language narrative for the selected report.</p>
+            <p><strong>Enterprise Context</strong>: production account, region, app instance, billing scope, and linked validation environments.</p>
+            <p><strong>Executive ROI Summary</strong> and additional report sections depending on the selected report type.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Choose the report type that matches the audience or objective</li>
+              <li>Set the appropriate time range</li>
+              <li>Apply category, team, owner, status, and severity filters</li>
+              <li>Choose the desired detail level</li>
+              <li>Review the KPI cards and Executive Summary</li>
+              <li>Review the detailed report sections</li>
+              <li>Download the report if a shareable output is needed</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Reports page answers: <strong>How do we turn analysis and recommendations into a clear, shareable story about value, ownership, and progress?</strong></p>
+          </div>
+        </section>
+      </div>
+
+      <div class="category-block">
+        <section class="section-card">
+          <h2>Admin</h2>
+          <p>The Admin section defines how CostOps is configured, governed, secured, and operated in an enterprise environment.</p>
+        </section>
+
+        <section class="page-card" id="enterprise-controls">
+          <h3>Enterprise Controls</h3>
+          <p>The <strong>Enterprise Controls</strong> page serves as the enterprise command center for CostOps. It provides a high-level view of enterprise rollout readiness, configuration status, blockers, and native control-plane sync behavior.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Review enterprise rollout readiness</li>
+              <li>Identify which enterprise setup areas are complete or incomplete</li>
+              <li>Understand rollout blockers</li>
+              <li>Confirm enterprise feature availability</li>
+              <li>Sync enterprise configuration into Snowflake</li>
+              <li>Monitor the overall state of enterprise-specific administration</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Enterprise status banners</strong>: communicate enterprise pricing, scope, workflow status, and blockers.</p>
+            <p><strong>Sync native control plane</strong>: writes current enterprise settings, user directory, and enterprise config audit data into Snowflake.</p>
+            <p><strong>Enterprise readiness metrics</strong>: readiness, active areas, ready for validation, and action needed.</p>
+            <p><strong>Rollout blockers</strong>: the most important configuration gaps that still need attention.</p>
+            <p><strong>Enterprise Feature Status</strong>: summary cards for SSO &amp; Identity, RBAC Mapping, Dedicated Persistence, SLA &amp; Support, Linked Dev/Test, and Production Instance.</p>
+            <p><strong>Enterprise readiness rollup</strong>: a structured status summary across major enterprise areas.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Review the enterprise status banners</li>
+              <li>Check readiness metrics</li>
+              <li>Review rollout blockers</li>
+              <li>Use the feature cards and readiness rollup to identify incomplete setup areas</li>
+              <li>Use Sync native control plane when the current configuration needs to be written to Snowflake</li>
+              <li>Move into detailed enterprise pages for deeper configuration work</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Enterprise Controls page answers: <strong>Are we operationally ready to run CostOps as an enterprise-managed platform in this Snowflake environment?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="rbac-mapping">
+          <h3>RBAC Mapping</h3>
+          <p>The <strong>RBAC Mapping</strong> page is used to define how source roles from Snowflake or another identity model map into CostOps application roles. It is the main access-model configuration page for Enterprise accounts and helps administrators control who can administer, operate, or view the platform.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Map Snowflake or identity roles to CostOps roles</li>
+              <li>Define a default CostOps role</li>
+              <li>Choose a role onboarding strategy</li>
+              <li>Manage individual source-role mappings</li>
+              <li>Review role coverage across the platform</li>
+              <li>Validate that the Admin, Operator, and Viewer model is fully represented</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Mapping summary metrics</strong>: mapped source roles, CostOps role coverage, active mappings, and ready for validation.</p>
+            <p><strong>RBAC status and default role</strong>: high-level posture and fallback role behavior.</p>
+            <p><strong>Role onboarding path</strong>: supports map existing roles or use recommended roles depending on customer maturity.</p>
+            <p><strong>Mapping action controls</strong>: edit, remove, add, and save mappings.</p>
+            <p><strong>Source role mapping editor</strong>: source role, CostOps role, scope, and mapping status.</p>
+            <p><strong>Mapping Coverage</strong>: confirms whether CostOps Admin, Operator, and Viewer are covered.</p>
+            <p><strong>Current Role Mappings</strong> and <strong>Effective access preview</strong>: make the active access model reviewable.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Review the mapping summary metrics</li>
+              <li>Choose the onboarding strategy that fits the organization</li>
+              <li>Define the default CostOps role</li>
+              <li>Add or edit source-role mappings</li>
+              <li>Use Mapping Coverage to confirm key roles are covered</li>
+              <li>Review Current Role Mappings for consistency</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The RBAC Mapping page answers: <strong>Who should be able to administer, operate, and view CostOps, and how does that map back to our Snowflake or identity access model?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="environments">
+          <h3>Environments</h3>
+          <p>The <strong>Environments</strong> page is used to define the production Snowflake account and manage linked validation environments such as development and test. It helps enterprise users distinguish the billable production instance from non-production environments used for rollout, validation, and testing.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Define the production Snowflake account</li>
+              <li>Record the production region and installed app instance</li>
+              <li>Identify the billing scope</li>
+              <li>Register linked development and test environments</li>
+              <li>Document the purpose and status of each validation environment</li>
+              <li>Support enterprise rollout planning and validation</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Environment summary metrics</strong>: production instance, linked validation environments, configured account locators, and active linked environments.</p>
+            <p><strong>Production environment configuration</strong>: production status, production account, region, installed app instance, and billing scope.</p>
+            <p><strong>Linked environment controls</strong>: add, edit, or remove validation environments and capture account locator, purpose, and status.</p>
+            <p><strong>Environment Readiness</strong>: summarizes production and validation structures in one table.</p>
+            <p><strong>Linked Validation Environments</strong>: focused view of the linked validation environment list.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Define the production Snowflake account first</li>
+              <li>Confirm the billing scope</li>
+              <li>Enter production region and installed app instance</li>
+              <li>Add development and test environments used for validation</li>
+              <li>Document the purpose and status of each linked environment</li>
+              <li>Review Environment Readiness to confirm completeness</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Environments page answers: <strong>Which Snowflake account is the real production instance, and which linked accounts are being used to validate changes before rollout?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="persistence">
+          <h3>Persistence</h3>
+          <p>The <strong>Persistence</strong> page is used to define how enterprise application data should be stored, isolated, retained, backed up, and validated for recovery. It helps administrators document the intended persistence model and assess whether the persistence layer is operationally ready for enterprise rollout.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Define the persistence target</li>
+              <li>Document the intended isolation model</li>
+              <li>Set retention expectations</li>
+              <li>Track backup readiness</li>
+              <li>Track restore-test readiness</li>
+              <li>Review whether persistence is ready for enterprise validation</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Persistence summary metrics</strong>: persistence status, target, retention, and restore readiness.</p>
+            <p><strong>Persistence guidance banner</strong>: frames the page as the operating model for data location, isolation, backup, and recovery.</p>
+            <p><strong>Persistence configuration controls</strong>: persistence status, target, isolation model, retention, backup status, and restore test status.</p>
+            <p><strong>Persistence Readiness</strong>: a structured summary across persistence target, isolation model, retention, backup cadence, and restore testing.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Review top-level persistence metrics</li>
+              <li>Confirm the intended persistence target</li>
+              <li>Define the isolation model</li>
+              <li>Set the expected retention period</li>
+              <li>Document backup status</li>
+              <li>Document restore-test status</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Persistence page answers: <strong>Where does CostOps data live, how is it isolated, and can we trust that it is durable and recoverable?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="sso-identity">
+          <h3>SSO &amp; Identity</h3>
+          <p>The <strong>SSO &amp; Identity</strong> page is used to document and prepare enterprise identity configuration for CostOps. It captures the provider, protocol, allowed domain, metadata details, and implementation contact needed to support future enterprise sign-in integration.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Define the intended identity provider</li>
+              <li>Choose the enterprise sign-in protocol</li>
+              <li>Record the allowed domain</li>
+              <li>Capture identity-provider metadata details</li>
+              <li>Identify the implementation contact</li>
+              <li>Track readiness before production SSO integration</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Identity summary metrics</strong>: SSO status, identity provider, protocol, and allowed domain.</p>
+            <p><strong>Identity guidance banner</strong>: clarifies that the page captures provider, domain, metadata handoff, and readiness before full integration.</p>
+            <p><strong>Identity configuration controls</strong>: provider, protocol, allowed domain, metadata URL, entity ID, implementation contact, and save.</p>
+            <p><strong>Identity Readiness</strong>: summarizes provider, protocol, domain, metadata, and implementation contact in one structured table.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Define the intended SSO provider</li>
+              <li>Confirm the enterprise identity protocol</li>
+              <li>Enter the allowed domain</li>
+              <li>Record the metadata URL and entity ID when available</li>
+              <li>Assign or confirm the implementation contact</li>
+              <li>Review Identity Readiness to understand what is still missing</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The SSO &amp; Identity page answers: <strong>How will users authenticate into CostOps, and how close are we to having that identity model ready for rollout?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="sla-support">
+          <h3>SLA &amp; Support</h3>
+          <p>The <strong>SLA &amp; Support</strong> page is used to define the support model for an Enterprise CostOps deployment. It helps administrators document the support tier, expected response window, deployment ownership, escalation path, and support notes needed before go-live.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Define the support tier for the account</li>
+              <li>Record the expected support response window</li>
+              <li>Assign a deployment owner</li>
+              <li>Document the escalation path</li>
+              <li>Capture important support notes</li>
+              <li>Review readiness before enterprise go-live</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Support summary metrics</strong>: SLA status, support tier, response window, and deployment owner.</p>
+            <p><strong>Support guidance banner</strong>: frames the page as the support planning surface before go-live.</p>
+            <p><strong>Support configuration controls</strong>: status, support tier, response window, deployment owner, escalation path, support notes, and save.</p>
+            <p><strong>Support Readiness</strong>: structured support posture summary across tier, response, owner, escalation, and notes.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Define the support tier</li>
+              <li>Confirm the response window</li>
+              <li>Assign the deployment owner</li>
+              <li>Document the escalation path</li>
+              <li>Capture important support notes</li>
+              <li>Review Support Readiness to confirm support planning is complete</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The SLA &amp; Support page answers: <strong>Who owns support for this deployment, what response should be expected, and how will issues be escalated if something goes wrong?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="users-roles">
+          <h3>Users and Roles</h3>
+          <p>The <strong>Users and Roles</strong> page is used to manage the internal assignment structure that drives recommendation ownership, workflow routing, and access organization inside CostOps. It brings together teams, user records, business roles, and application access roles into one administrative view.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Manage teams used for routing and accountability</li>
+              <li>Maintain the user directory</li>
+              <li>Assign business roles to users</li>
+              <li>Assign CostOps application access roles</li>
+              <li>Keep ownership data consistent across the platform</li>
+              <li>Support recommendation assignment and operational workflow</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Manage Teams</strong>: add, edit, remove, and save routing teams used throughout the app.</p>
+            <p><strong>Team list</strong>: reference table of current teams.</p>
+            <p><strong>Manage Users</strong>: add, edit, or remove users and define their team, business role, access role, and email.</p>
+            <p><strong>Current Directory</strong>: view of all current users.</p>
+            <p><strong>Business Role Catalog</strong>: controlled list of internal business roles.</p>
+            <p><strong>Application Access Roles</strong>: CostOps Admin, Operator, and Viewer access definitions.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Review the current team structure</li>
+              <li>Add or edit teams as needed</li>
+              <li>Maintain the user directory</li>
+              <li>Confirm each user has the correct team, business role, access role, and email</li>
+              <li>Review the Current Directory for consistency</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Users and Roles page answers: <strong>Who owns the work in CostOps, how are they organized, and what level of access do they need?</strong></p>
+          </div>
+        </section>
+
+        <section class="page-card" id="settings">
+          <h3>Settings</h3>
+          <p>The <strong>Settings</strong> page is the main operational configuration page for CostOps. It is used to control scan behavior, recommendation thresholds, session mode, Snowflake connectivity, and assumptions related to native deployment readiness.</p>
+          <div class="subsection">
+            <h4>What this page is for</h4>
+            <ul>
+              <li>Control the current session role and data source mode</li>
+              <li>Define the financial assumptions used by the app</li>
+              <li>Adjust rule thresholds that influence recommendation generation</li>
+              <li>Configure data thresholds used during analysis</li>
+              <li>Control recommendation confidence and savings floors</li>
+              <li>Test Snowflake connectivity</li>
+              <li>Initialize native persistence objects</li>
+              <li>Sync the native control plane</li>
+              <li>Review readiness and packaging assumptions</li>
+            </ul>
+          </div>
+          <div class="subsection">
+            <h4>Main sections</h4>
+            <p><strong>Session Controls</strong>: session role mode, access role, resolved CostOps role, and data source.</p>
+            <p><strong>Cost Model</strong>: credit price, lookback days, annualization months, minimum monthly savings, and default recommendation confidence.</p>
+            <p><strong>Rule Thresholds</strong>: warehouse and task thresholds that shape recommendation logic.</p>
+            <p><strong>Data Thresholds</strong>: storage, scan, spill, and due-date thresholds.</p>
+            <p><strong>Recommendation behavior controls</strong>: read-only recommendations, generate implementation SQL, and allow approved SQL execution.</p>
+            <p><strong>Snowflake Connection</strong>: summary of connection configuration status.</p>
+            <p><strong>Native and persistence readiness actions</strong>: testing Snowflake connection, initializing the persistence schema, and syncing the native control plane.</p>
+          </div>
+          <div class="subsection">
+            <h4>Recommended user behavior</h4>
+            <ol>
+              <li>Confirm the session role and data source</li>
+              <li>Review and adjust the cost model assumptions</li>
+              <li>Review rule thresholds and data thresholds</li>
+              <li>Decide whether recommendation SQL generation should be enabled</li>
+              <li>Save threshold settings after changes</li>
+              <li>Review the Snowflake Connection section</li>
+              <li>Use connection and native-readiness actions when preparing for Snowflake deployment or testing</li>
+            </ol>
+          </div>
+          <div class="subsection">
+            <h4>Why this page matters</h4>
+            <p>The Settings page answers: <strong>How is CostOps currently configured to interpret data, generate recommendations, and connect to Snowflake?</strong></p>
+          </div>
+        </section>
+      </div>
+
+      <section class="footer-note">
+        <h2>Next documentation steps</h2>
+        <p>This HTML version is a clean prototype for review. The next likely improvements are:</p>
+        <ul>
+          <li>Add screenshots page by page</li>
+          <li>Tighten sections for the final audience</li>
+          <li>Decide whether the first public-facing version is aimed at executives, general users, or admins</li>
+          <li>Turn this into a hosted help experience with navigation, images, and future video links</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
